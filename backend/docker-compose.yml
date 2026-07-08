@@ -40,8 +40,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - .:/app
+    # volumes:
+    #   - .:/app  # 注释掉，使用镜像内构建的版本
 
 volumes:
   pgdata:
