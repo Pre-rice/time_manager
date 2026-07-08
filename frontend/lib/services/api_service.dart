@@ -46,7 +46,8 @@ class ApiService {
     await prefs.remove(_tokenKey);
   }
 
-  // 认证
+  // ==================== 认证 ====================
+
   Future<Map<String, dynamic>> login(String username, String password) async {
     final response = await _dio.post('/api/v1/auth/login', data: {
       'username': username,
@@ -64,5 +65,71 @@ class ApiService {
     return response.data;
   }
 
-  // TODO: 后续添加事件、任务、目标等 API
+  // ==================== 日程 ====================
+
+  Future<List<dynamic>> getEvents({String? start, String? end}) async {
+    final query = <String, dynamic>{};
+    if (start != null) query['start'] = start;
+    if (end != null) query['end'] = end;
+    final response = await _dio.get('/api/v1/events/', queryParameters: query);
+    return response.data as List<dynamic>;
+  }
+
+  Future<Map<String, dynamic>> createEvent(Map<String, dynamic> data) async {
+    final response = await _dio.post('/api/v1/events/', data: data);
+    return response.data;
+  }
+
+  Future<Map<String, dynamic>> updateEvent(String id, Map<String, dynamic> data) async {
+    final response = await _dio.put('/api/v1/events/$id', data: data);
+    return response.data;
+  }
+
+  Future<void> deleteEvent(String id) async {
+    await _dio.delete('/api/v1/events/$id');
+  }
+
+  // ==================== 待办 ====================
+
+  Future<List<dynamic>> getTasks() async {
+    final response = await _dio.get('/api/v1/tasks/');
+    return response.data as List<dynamic>;
+  }
+
+  Future<Map<String, dynamic>> createTask(Map<String, dynamic> data) async {
+    final response = await _dio.post('/api/v1/tasks/', data: data);
+    return response.data;
+  }
+
+  Future<Map<String, dynamic>> updateTask(String id, Map<String, dynamic> data) async {
+    final response = await _dio.put('/api/v1/tasks/$id', data: data);
+    return response.data;
+  }
+
+  Future<void> deleteTask(String id) async {
+    await _dio.delete('/api/v1/tasks/$id');
+  }
+
+  // ==================== 目标 ====================
+
+  Future<List<dynamic>> getGoals() async {
+    final response = await _dio.get('/api/v1/goals/');
+    return response.data as List<dynamic>;
+  }
+
+  Future<Map<String, dynamic>> createGoal(Map<String, dynamic> data) async {
+    final response = await _dio.post('/api/v1/goals/', data: data);
+    return response.data;
+  }
+
+  Future<Map<String, dynamic>> updateGoalProgress(String id, double currentValue) async {
+    final response = await _dio.patch('/api/v1/goals/$id/progress', data: {
+      'current_value': currentValue,
+    });
+    return response.data;
+  }
+
+  Future<void> deleteGoal(String id) async {
+    await _dio.delete('/api/v1/goals/$id');
+  }
 }
