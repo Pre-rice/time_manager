@@ -98,6 +98,10 @@ time_manager/
 | 待办 | `GET/POST/PUT/DELETE /tasks` | ✅ 已完成 |
 | 目标 | `GET/POST/PUT/DELETE /goals` | ✅ 已完成 |
 | 日历标识 | `GET/POST/DELETE /special-dates` | ✅ 已完成 |
+| AI 配置 | `GET/PUT/PATCH/DELETE /ai/config/` | ✅ 已完成 |
+| AI 文本提取 | `POST /ai/extract` | ✅ 已验证 |
+| AI 时间建议 | `POST /ai/suggest-time` | ✅ 已完成 |
+| AI 早安消息 | `GET /ai/morning-message` | ✅ 已完成 |
 
 ## 开发进度
 
@@ -124,11 +128,31 @@ time_manager/
 - [x] 前端：待办列表（对接真实 API）
 - [x] 前端：目标进度管理（对接真实 API）
 
-### Phase 3 🔜 AI 集成
-### Phase 4 🔜 外部数据
-### Phase 5 🔜 实时与提醒
-### Phase 6 🔜 界面设计
-### Phase 7 🔜 报告与发布
+### Phase 3 ⚠️ AI 集成（部分完成）
+- [x] 后端：AI 配置 CRUD（加密存储 API Key）
+- [x] 后端：文本提取 API（自然语言 → 结构化日程/待办）
+- [x] 后端：时间建议 API（根据空闲时间推荐安排）
+- [x] 后端：早安消息 API（生成每日问候）
+- [x] 后端：LiteLLM 集成（支持 DeepSeek 等模型）
+- [x] 前端：AI 助手页面（文本输入 → 提取 → 添加）
+- [x] 前端：AI 配置页面（API Key/模型/地址配置）
+- [x] 前端：首页早安消息卡片（手动触发生成）
+- [x] **AI 文本提取已验证通过** ✅
+- [ ] 时间建议前端集成
+- [ ] 早安消息自动定时推送
+
+### Phase 4 🔜 MVP 用户体验优化（当前阶段）
+- [ ] 时间选择器（替换手动输入时间戳，默认当前时间）
+- [ ] 编辑功能（点击列表项弹窗编辑）
+- [ ] 删除确认（弹窗确认）
+- [ ] 日程月视图（table_calendar 集成）
+- [ ] 首页今日梳理（AI 生成概览）
+- [ ] 首页概览（今日日程 + 待办统计）
+
+### Phase 5 🔜 外部数据
+### Phase 6 🔜 实时与提醒
+### Phase 7 🔜 界面美化
+### Phase 8 🔜 报告与发布
 
 ## 常见问题
 
