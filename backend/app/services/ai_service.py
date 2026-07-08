@@ -24,13 +24,27 @@ async def get_user_ai_config(db: AsyncSession, user_id: uuid.UUID) -> AIConfig |
 def build_litellm_params(config: AIConfig) -> dict:
     """构建 LiteLLM 调用参数"""
     api_key = decrypt_api_key(config.encrypted_api_key)
+    model = config.model_name
+    api_base = config.api_endpoint
+
+    # LiteLLM 需要 provider 前缀，如 deepseek/deepseek-chat
+    # 如果模型名不包含 /，根据 api_endpoint 推断 provider
+    if "/" not in model:
+        if api_base and "deepseek" in api_base:
+            model = f"deepseek/{model}"
+        elif api_base and "azure" in api_base:
+            model = f"azure/{model}"
+        # 默认 openai/ 前缀
+        else:
+            model = model  # openai 不需要前缀
+
     params = {
-        "model": config.model_name,
+        "model": model,
         "api_key": api_key,
         "temperature": 0.3,
     }
-    if config.api_endpoint:
-        params["api_base"] = config.api_endpoint
+    if api_base:
+        params["api_base"] = api_base
     return params
 
 
