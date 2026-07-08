@@ -5,17 +5,16 @@ class ApiService {
   static const String defaultBaseUrl = 'http://localhost:8000';
   static const String _tokenKey = 'auth_token';
 
-  late final Dio _dio;
+  final Dio _dio;
   String? _token;
 
-  ApiService({String baseUrl = defaultBaseUrl}) {
-    _dio = Dio(BaseOptions(
-      baseUrl: baseUrl,
-      connectTimeout: const Duration(seconds: 10),
-      receiveTimeout: const Duration(seconds: 10),
-      headers: {'Content-Type': 'application/json'},
-    ));
-
+  ApiService({String baseUrl = defaultBaseUrl})
+      : _dio = Dio(BaseOptions(
+          baseUrl: baseUrl,
+          connectTimeout: const Duration(seconds: 10),
+          receiveTimeout: const Duration(seconds: 10),
+          headers: {'Content-Type': 'application/json'},
+        )) {
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
         if (_token != null) {
@@ -24,6 +23,9 @@ class ApiService {
         handler.next(options);
       },
       onError: (error, handler) {
+        if (error.response?.statusCode == 401) {
+          clearToken();
+        }
         handler.next(error);
       },
     ));
@@ -33,6 +35,8 @@ class ApiService {
     final prefs = await SharedPreferences.getInstance();
     _token = prefs.getString(_tokenKey);
   }
+
+  bool get hasToken => _token != null;
 
   Future<void> saveToken(String token) async {
     _token = token;
@@ -131,5 +135,47 @@ class ApiService {
 
   Future<void> deleteGoal(String id) async {
     await _dio.delete('/api/v1/goals/$id');
+  }
+
+  // ==================== AI 配置 ====================
+
+  Future<Map<String, dynamic>?> getAIConfig() async {
+    try {
+      final response = await _dio.get('/api/v1/ai/config/');
+      return response.data as Map<String, dynamic>?;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>> saveAIConfig(Map<String, dynamic> data) async {
+    final response = await _dio.put('/api/v1/ai/config/', data: data);
+    return response.data;
+  }
+
+  Future<void> deleteAIConfig() async {
+    await _dio.delete('/api/v1/ai/config/');
+  }
+
+  // ==================== AI 功能 ====================
+
+  Future<List<dynamic>> extractFromText(String text) async {
+    final response = await _dio.post('/api/v1/ai/extract', data: {
+      'text': text,
+    });
+    return response.data['items'] as List<dynamic>;
+  }
+
+  Future<Map<String, dynamic>> suggestTime(String title, int durationMinutes) async {
+    final response = await _dio.post('/api/v1/ai/suggest-time', data: {
+      'title': title,
+      'duration_minutes': durationMinutes,
+    });
+    return response.data;
+  }
+
+  Future<Map<String, dynamic>> getMorningMessage() async {
+    final response = await _dio.get('/api/v1/ai/morning-message');
+    return response.data;
   }
 }

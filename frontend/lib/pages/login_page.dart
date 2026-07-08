@@ -1,19 +1,23 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../services/api_service.dart';
+import '../providers/auth_provider.dart';
 
-class LoginPage extends StatefulWidget {
+class LoginPage extends ConsumerStatefulWidget {
   const LoginPage({super.key});
 
   @override
-  State<LoginPage> createState() => _LoginPageState();
+  ConsumerState<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> {
+class _LoginPageState extends ConsumerState<LoginPage> {
   final _formKey = GlobalKey<FormState>();
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _loading = false;
   bool _obscurePassword = true;
+  String? _error;
 
   @override
   void dispose() {
@@ -24,11 +28,25 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
-    setState(() => _loading = true);
-    // TODO: 对接后端 API
-    await Future.delayed(const Duration(seconds: 1));
-    setState(() => _loading = false);
-    context.go('/home');
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final ok = await ref.read(authProvider.notifier).login(
+        _usernameController.text.trim(),
+        _passwordController.text,
+      );
+      if (mounted) {
+        if (ok) {
+          context.go('/home');
+        } else {
+          setState(() => _error = ref.read(authProvider).error ?? '用户名或密码错误');
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   @override
@@ -46,7 +64,11 @@ class _LoginPageState extends State<LoginPage> {
                 Icon(Icons.access_time_rounded, size: 64, color: theme.colorScheme.primary),
                 const SizedBox(height: 16),
                 Text('Time Manager', style: theme.textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 32),
+                if (_error != null) ...[
+                  const SizedBox(height: 16),
+                  Text(_error!, style: TextStyle(color: theme.colorScheme.error)),
+                ],
+                const SizedBox(height: 24),
                 TextFormField(
                   controller: _usernameController,
                   decoration: const InputDecoration(labelText: '用户名', prefixIcon: Icon(Icons.person)),

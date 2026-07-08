@@ -4,8 +4,14 @@ import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 
 final _eventsProvider = FutureProvider.autoDispose<List<dynamic>>((ref) async {
+  ref.watch(authProvider);
   final api = ref.read(apiServiceProvider);
-  return api.getEvents();
+  if (!api.hasToken) return [];
+  try {
+    return await api.getEvents();
+  } catch (_) {
+    return [];
+  }
 });
 
 class EventsPage extends ConsumerWidget {
@@ -24,31 +30,9 @@ class EventsPage extends ConsumerWidget {
       ),
       body: eventsAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.error_outline, size: 64, color: theme.colorScheme.error),
-              const SizedBox(height: 16),
-              Text('加载失败', style: theme.textTheme.titleMedium),
-            ],
-          ),
-        ),
+        error: (_, __) => _emptyView(theme),
         data: (events) {
-          if (events.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.event, size: 80, color: theme.colorScheme.primary.withValues(alpha: 0.4)),
-                  const SizedBox(height: 16),
-                  Text('暂无日程', style: theme.textTheme.titleMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-                  const SizedBox(height: 8),
-                  Text('点击右下角 + 添加', style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-                ],
-              ),
-            );
-          }
+          if (events.isEmpty) return _emptyView(theme);
           return RefreshIndicator(
             onRefresh: () async => ref.invalidate(_eventsProvider),
             child: ListView.builder(
@@ -82,6 +66,21 @@ class EventsPage extends ConsumerWidget {
     );
   }
 
+  Widget _emptyView(ThemeData theme) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.event, size: 80, color: theme.colorScheme.primary.withValues(alpha: 0.4)),
+          const SizedBox(height: 16),
+          Text('暂无日程', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Text('点击右下角 + 添加', style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+        ],
+      ),
+    );
+  }
+
   Future<void> _showAddDialog(BuildContext context, WidgetRef ref) async {
     final titleCtrl = TextEditingController();
     final descCtrl = TextEditingController();
@@ -111,14 +110,23 @@ class EventsPage extends ConsumerWidget {
           FilledButton(
             onPressed: () async {
               if (titleCtrl.text.isEmpty) return;
-              await ref.read(apiServiceProvider).createEvent({
-                'title': titleCtrl.text,
-                'description': descCtrl.text,
-                if (startDateCtrl.text.isNotEmpty) 'start_time': startDateCtrl.text,
-                if (endDateCtrl.text.isNotEmpty) 'end_time': endDateCtrl.text,
-              });
-              if (ctx.mounted) Navigator.pop(ctx);
-              ref.invalidate(_eventsProvider);
+              try {
+                final api = ref.read(apiServiceProvider);
+                await api.createEvent({
+                  'title': titleCtrl.text,
+                  'description': descCtrl.text,
+                  if (startDateCtrl.text.isNotEmpty) 'start_time': startDateCtrl.text,
+                  if (endDateCtrl.text.isNotEmpty) 'end_time': endDateCtrl.text,
+                });
+                if (ctx.mounted) Navigator.pop(ctx);
+                ref.invalidate(_eventsProvider);
+              } catch (_) {
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(content: Text('添加失败，请检查网络连接')),
+                  );
+                }
+              }
             },
             child: const Text('添加'),
           ),

@@ -4,8 +4,14 @@ import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 
 final _tasksProvider = FutureProvider.autoDispose<List<dynamic>>((ref) async {
+  ref.watch(authProvider);
   final api = ref.read(apiServiceProvider);
-  return api.getTasks();
+  if (!api.hasToken) return [];
+  try {
+    return await api.getTasks();
+  } catch (_) {
+    return [];
+  }
 });
 
 class TasksPage extends ConsumerWidget {
@@ -24,21 +30,9 @@ class TasksPage extends ConsumerWidget {
       ),
       body: tasksAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('加载失败: $e')),
+        error: (e, _) => _emptyView(theme),
         data: (tasks) {
-          if (tasks.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.checklist, size: 80, color: theme.colorScheme.primary.withValues(alpha: 0.4)),
-                  const SizedBox(height: 16),
-                  Text('暂无待办', style: theme.textTheme.titleMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-                  Text('点击右下角 + 添加', style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-                ],
-              ),
-            );
-          }
+          if (tasks.isEmpty) return _emptyView(theme);
           return RefreshIndicator(
             onRefresh: () async => ref.invalidate(_tasksProvider),
             child: ListView.builder(
@@ -46,8 +40,7 @@ class TasksPage extends ConsumerWidget {
               itemCount: tasks.length,
               itemBuilder: (context, index) {
                 final task = tasks[index] as Map<String, dynamic>;
-                final status = task['status'] as String? ?? 'todo';
-                final isDone = status == 'done';
+                final isDone = task['status'] == 'done';
 
                 return Card(
                   margin: const EdgeInsets.only(bottom: 8),
@@ -92,6 +85,21 @@ class TasksPage extends ConsumerWidget {
     );
   }
 
+  Widget _emptyView(ThemeData theme) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.checklist, size: 80, color: theme.colorScheme.primary.withValues(alpha: 0.4)),
+          const SizedBox(height: 16),
+          Text('暂无待办', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Text('点击右下角 + 添加', style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+        ],
+      ),
+    );
+  }
+
   Future<void> _showAddDialog(BuildContext context, WidgetRef ref) async {
     final titleCtrl = TextEditingController();
     final deadlineCtrl = TextEditingController();
@@ -129,13 +137,21 @@ class TasksPage extends ConsumerWidget {
             FilledButton(
               onPressed: () async {
                 if (titleCtrl.text.isEmpty) return;
-                await ref.read(apiServiceProvider).createTask({
-                  'title': titleCtrl.text,
-                  'priority': priority,
-                  if (deadlineCtrl.text.isNotEmpty) 'deadline': deadlineCtrl.text,
-                });
-                if (ctx.mounted) Navigator.pop(ctx);
-                ref.invalidate(_tasksProvider);
+                try {
+                  await ref.read(apiServiceProvider).createTask({
+                    'title': titleCtrl.text,
+                    'priority': priority,
+                    if (deadlineCtrl.text.isNotEmpty) 'deadline': deadlineCtrl.text,
+                  });
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  ref.invalidate(_tasksProvider);
+                } catch (_) {
+                  if (ctx.mounted) {
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      const SnackBar(content: Text('添加失败，请检查网络连接')),
+                    );
+                  }
+                }
               },
               child: const Text('添加'),
             ),
@@ -160,18 +176,15 @@ class TasksPage extends ConsumerWidget {
   String _taskSubtitle(Map<String, dynamic> task) {
     final deadline = task['deadline'] as String?;
     final status = task['status'] as String? ?? 'todo';
+    final statusText = switch (status) {
+      'todo' => '待办',
+      'in_progress' => '进行中',
+      'done' => '已完成',
+      _ => status,
+    };
     if (deadline != null) {
-      return '截止: ${deadline.substring(0, 16).replaceAll("T", " ")} | ${_statusText(status)}';
+      return '截止: ${deadline.substring(0, 16).replaceAll("T", " ")} | $statusText';
     }
-    return _statusText(status);
-  }
-
-  String _statusText(String status) {
-    switch (status) {
-      case 'todo': return '待办';
-      case 'in_progress': return '进行中';
-      case 'done': return '已完成';
-      default: return status;
-    }
+    return statusText;
   }
 }

@@ -94,12 +94,10 @@ time_manager/
 |------|------|------|
 | 认证 | `POST /auth/register` | ✅ 已完成 |
 | 认证 | `POST /auth/login` | ✅ 已完成 |
-| 日程 | `GET/POST /events` | 📝 开发中 |
-| 日程 | `GET/PUT/DELETE /events/{id}` | 📝 开发中 |
-| 待办 | `GET/POST /tasks` | 📝 开发中 |
-| 待办 | `GET/PUT/DELETE /tasks/{id}` | 📝 开发中 |
-| 目标 | `GET/POST /goals` | 📝 开发中 |
-| 目标 | `GET/PUT/DELETE /goals/{id}` | 📝 开发中 |
+| 日程 | `GET/POST/PUT/DELETE /events` | ✅ 已完成 |
+| 待办 | `GET/POST/PUT/DELETE /tasks` | ✅ 已完成 |
+| 目标 | `GET/POST/PUT/DELETE /goals` | ✅ 已完成 |
+| 日历标识 | `GET/POST/DELETE /special-dates` | ✅ 已完成 |
 
 ## 开发进度
 
@@ -117,14 +115,14 @@ time_manager/
 - [x] API 服务封装（Dio + 自动 Token 注入）
 - [x] Riverpod 认证状态管理
 
-### Phase 2 📝 核心实体（当前阶段）
-- [ ] 后端：日程 CRUD 接口（含准备时段）
-- [ ] 后端：待办 CRUD 接口（含准备时段）
-- [ ] 后端：目标 CRUD 接口（含进度更新）
-- [ ] 后端：日历标识 CRUD 接口
-- [ ] 前端：日程列表（日/周/月视图）
-- [ ] 前端：待办列表（多视图模式）
-- [ ] 前端：目标进度管理
+### Phase 2 ✅ 核心实体
+- [x] 后端：日程 CRUD 接口（含准备时段）
+- [x] 后端：待办 CRUD 接口（含准备时段）
+- [x] 后端：目标 CRUD 接口（含进度更新）
+- [x] 后端：日历标识 CRUD 接口
+- [x] 前端：日程列表（对接真实 API）
+- [x] 前端：待办列表（对接真实 API）
+- [x] 前端：目标进度管理（对接真实 API）
 
 ### Phase 3 🔜 AI 集成
 ### Phase 4 🔜 外部数据

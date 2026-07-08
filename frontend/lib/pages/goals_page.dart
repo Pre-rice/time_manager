@@ -4,8 +4,14 @@ import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 
 final _goalsProvider = FutureProvider.autoDispose<List<dynamic>>((ref) async {
+  ref.watch(authProvider);
   final api = ref.read(apiServiceProvider);
-  return api.getGoals();
+  if (!api.hasToken) return [];
+  try {
+    return await api.getGoals();
+  } catch (_) {
+    return [];
+  }
 });
 
 class GoalsPage extends ConsumerWidget {
@@ -24,21 +30,9 @@ class GoalsPage extends ConsumerWidget {
       ),
       body: goalsAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('加载失败: $e')),
+        error: (e, _) => _emptyView(theme),
         data: (goals) {
-          if (goals.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.flag, size: 80, color: theme.colorScheme.primary.withValues(alpha: 0.4)),
-                  const SizedBox(height: 16),
-                  Text('暂无目标', style: theme.textTheme.titleMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-                  Text('点击右下角 + 添加', style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-                ],
-              ),
-            );
-          }
+          if (goals.isEmpty) return _emptyView(theme);
           return RefreshIndicator(
             onRefresh: () async => ref.invalidate(_goalsProvider),
             child: ListView.builder(
@@ -61,9 +55,7 @@ class GoalsPage extends ConsumerWidget {
                           children: [
                             Icon(Icons.flag, color: theme.colorScheme.primary),
                             const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(goal['title'] ?? '', style: theme.textTheme.titleMedium),
-                            ),
+                            Expanded(child: Text(goal['title'] ?? '', style: theme.textTheme.titleMedium)),
                             IconButton(
                               icon: const Icon(Icons.delete_outline, size: 20),
                               onPressed: () async {
@@ -118,6 +110,21 @@ class GoalsPage extends ConsumerWidget {
     );
   }
 
+  Widget _emptyView(ThemeData theme) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.flag, size: 80, color: theme.colorScheme.primary.withValues(alpha: 0.4)),
+          const SizedBox(height: 16),
+          Text('暂无目标', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Text('点击右下角 + 添加', style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+        ],
+      ),
+    );
+  }
+
   Future<void> _showAddDialog(BuildContext context, WidgetRef ref) async {
     final titleCtrl = TextEditingController();
     final targetCtrl = TextEditingController();
@@ -144,13 +151,21 @@ class GoalsPage extends ConsumerWidget {
           FilledButton(
             onPressed: () async {
               if (titleCtrl.text.isEmpty) return;
-              await ref.read(apiServiceProvider).createGoal({
-                'title': titleCtrl.text,
-                if (targetCtrl.text.isNotEmpty) 'target_value': double.parse(targetCtrl.text),
-                if (unitCtrl.text.isNotEmpty) 'unit': unitCtrl.text,
-              });
-              if (ctx.mounted) Navigator.pop(ctx);
-              ref.invalidate(_goalsProvider);
+              try {
+                await ref.read(apiServiceProvider).createGoal({
+                  'title': titleCtrl.text,
+                  if (targetCtrl.text.isNotEmpty) 'target_value': double.parse(targetCtrl.text),
+                  if (unitCtrl.text.isNotEmpty) 'unit': unitCtrl.text,
+                });
+                if (ctx.mounted) Navigator.pop(ctx);
+                ref.invalidate(_goalsProvider);
+              } catch (_) {
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(content: Text('添加失败，请检查网络连接')),
+                  );
+                }
+              }
             },
             child: const Text('添加'),
           ),
@@ -176,9 +191,17 @@ class GoalsPage extends ConsumerWidget {
           FilledButton(
             onPressed: () async {
               if (ctrl.text.isEmpty) return;
-              await ref.read(apiServiceProvider).updateGoalProgress(goal['id'], double.parse(ctrl.text));
-              if (ctx.mounted) Navigator.pop(ctx);
-              ref.invalidate(_goalsProvider);
+              try {
+                await ref.read(apiServiceProvider).updateGoalProgress(goal['id'], double.parse(ctrl.text));
+                if (ctx.mounted) Navigator.pop(ctx);
+                ref.invalidate(_goalsProvider);
+              } catch (_) {
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(content: Text('更新失败，请检查网络连接')),
+                  );
+                }
+              }
             },
             child: const Text('更新'),
           ),
