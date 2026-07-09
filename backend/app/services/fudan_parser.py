@@ -423,6 +423,109 @@ def _parse_result_format(items: list, lesson_map: dict) -> list[dict]:
     return schedules
 
 
+def parse_print_data_schedules(print_data: dict, lesson_map: dict) -> list[dict]:
+    """
+    解析 print-data API 返回的课表排课数据。
+    
+    print-data API URL:
+    https://fdjwgl.fudan.edu.cn/student/for-std/course-table/semester/{sem_id}/print-data
+    
+    返回结构示例（参考 DanXi 源码）:
+    {
+        "studentTableVms": [
+            {
+                "id": 485841,
+                "name": "...",
+                "activities": [
+                    {
+                        "courseName": "高等数学A",
+                        "lessonId": 123456,
+                        "lessonCode": "MATH120001.01",
+                        "teachers": ["张老师"],
+                        "weekday": 1,           # 1=周一, 7=周日
+                        "startUnit": 1,         # 第1节
+                        "endUnit": 2,           # 第2节
+                        "weekIndexes": [1,2,3,...,16],  # 周次列表
+                        "room": "H2108"
+                    },
+                    ...
+                ]
+            }
+        ],
+        "semester": {
+            "startDate": "2026-08-30"  # 周日，实际周一=startDate+1
+        }
+    }
+    
+    Args:
+        print_data: print-data API 返回的 JSON dict
+        lesson_map: { lesson_id: { title, code, teacher, ... } }
+    
+    Returns:
+        排课条目列表
+        { title, code, teacher, weekday, weeks, start_unit, end_unit, location }
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    schedules = []
+    
+    student_tables = print_data.get("studentTableVms", [])
+    if not student_tables:
+        logger.warning("No studentTableVms in print-data response")
+        return schedules
+    
+    for table in student_tables:
+        activities = table.get("activities", [])
+        for activity in activities:
+            course_name = activity.get("courseName", "")
+            lesson_id = str(activity.get("lessonId", ""))
+            
+            # 从 lesson_map 获取补充信息
+            lesson_info = lesson_map.get(lesson_id, {})
+            title = course_name or lesson_info.get("title", "")
+            if not title:
+                continue
+            
+            teacher_list = activity.get("teachers", [])
+            teacher = teacher_list[0] if teacher_list else lesson_info.get("teacher", "")
+            code = activity.get("lessonCode", "") or lesson_info.get("code", "")
+            
+            weekday = activity.get("weekday")
+            start_unit = activity.get("startUnit")
+            end_unit = activity.get("endUnit")
+            week_indexes = activity.get("weekIndexes", [])
+            room = activity.get("room", "")
+            
+            if weekday is None or start_unit is None:
+                continue
+            
+            # 将 weekIndexes 转换为 weeks 字符串（如 "1-16"）
+            if week_indexes:
+                week_indexes = sorted(week_indexes)
+                # 判断是否连续
+                if len(week_indexes) > 1 and all(
+                    week_indexes[i] + 1 == week_indexes[i + 1] for i in range(len(week_indexes) - 1)
+                ):
+                    weeks_str = f"{week_indexes[0]}-{week_indexes[-1]}"
+                else:
+                    weeks_str = ",".join(str(w) for w in week_indexes)
+            else:
+                weeks_str = ""
+            
+            schedules.append({
+                "title": title,
+                "code": code,
+                "teacher": teacher,
+                "weekday": int(weekday),
+                "weeks": weeks_str,
+                "start_unit": int(start_unit),
+                "end_unit": int(end_unit),
+                "location": room,
+            })
+    
+    return schedules
+
+
 def compute_semester_start(semester_id: int, semester_name: str = "") -> str | None:
     """
     计算学期开始日期。

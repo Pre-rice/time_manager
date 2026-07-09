@@ -22,6 +22,7 @@ from app.services.fudan_parser import (
     parse_weeks,
     period_to_time,
     parse_schedule_from_draw_data,
+    parse_print_data_schedules,
     compute_semester_start,
     build_rrule,
     unit_to_time,
@@ -34,6 +35,7 @@ ID_HOST = "id.fudan.edu.cn"
 COURSE_TABLE_URL = "https://fdjwgl.fudan.edu.cn/student/for-std/course-table"
 EXAM_ARRANGE_URL = "https://fdjwgl.fudan.edu.cn/student/for-std/exam-arrange/"
 ELEARNING_URL = "https://elearning.fudan.edu.cn/dash"
+PRINT_DATA_URL = "https://fdjwgl.fudan.edu.cn/student/for-std/course-table/semester/{sem_id}/print-data"
 
 
 def _rsa_encrypt(password: str, public_key_b64: str) -> str:
@@ -737,63 +739,41 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
     # Step 4: 获取考试 HTML
     html_exams = await _fetch_exams(client)
     
-    # Step 5: 通过 draw-table-data API 获取真正的排课数据
+    # Step 5: 通过 print-data API 获取真正的排课数据（参考 DanXi 源码）
     schedules = []
     if semester_id and student_id:
-        try:
-            draw_url = "https://fdjwgl.fudan.edu.cn/ws/schedule-table/draw-table-data"
-            body = {
-                "semesterId": semester_id,
-                "studentIds": [int(student_id)],
-                "bizTypeId": 2,
-                "type": "student",
-                "personId": int(person_id) if person_id else 0,
+        # 构建 lesson_map（从 raw_lessons 获取课程信息）
+        lesson_map = {}
+        for l in raw_lessons:
+            lid = str(l.get("id", ""))
+            course = l.get("course", {})
+            lesson_map[lid] = {
+                "title": course.get("nameZh", ""),
+                "code": l.get("code", ""),
+                "teacher": teacher_map.get(lid, ""),
             }
-            logger.info(f"Calling draw API with body: semesterId={semester_id}, studentIds=[{student_id}], personId={person_id}")
-            draw_resp = await client.post(draw_url, json=body)
-            logger.info(f"Draw API response: status={draw_resp.status_code}, content_len={len(draw_resp.text)}, preview={draw_resp.text[:500]}")
+        
+        try:
+            print_data_url = PRINT_DATA_URL.replace("{sem_id}", str(semester_id))
+            logger.info(f"Calling print-data API: {print_data_url}")
+            print_resp = await client.get(print_data_url, follow_redirects=True)
+            logger.info(f"Print-data API response: status={print_resp.status_code}, content_len={len(print_resp.text)}")
             
-            # 即使非200也记录原始body（可能返回错误信息）
-            if draw_resp.status_code != 200:
-                logger.warning(f"Draw API non-200: body={draw_resp.text[:2000]}")
-            
-            if draw_resp.status_code == 200 and len(draw_resp.text) > 20:
-                raw_text = draw_resp.text
-                logger.info(f"Draw API raw text (full): {raw_text[:5000]}")
-                draw_data = draw_resp.json()
-                logger.info(f"Draw API returned type: {type(draw_data).__name__}")
-                if isinstance(draw_data, dict):
-                    logger.info(f"Draw API keys: {list(draw_data.keys())}")
-                elif isinstance(draw_data, list):
-                    logger.info(f"Draw API list length: {len(draw_data)}")
-                    if draw_data:
-                        import json as _json_debug
-                        try:
-                            full_json_str = _json_debug.dumps(draw_data[:3], ensure_ascii=False, default=str)[:5000]
-                        except Exception:
-                            full_json_str = str(draw_data[:3])[:5000]
-                        logger.info(f"Draw API first 3 items: {full_json_str}")
+            if print_resp.status_code == 200 and len(print_resp.text) > 20:
+                print_data = print_resp.json()
+                logger.info(f"Print-data API keys: {list(print_data.keys()) if isinstance(print_data, dict) else 'N/A'}")
                 
-                # 构建 lesson_map 供解析器使用
-                lesson_map = {}
-                for l in raw_lessons:
-                    lid = str(l.get("id", ""))
-                    course = l.get("course", {})
-                    lesson_map[lid] = {
-                        "title": course.get("nameZh", ""),
-                        "code": l.get("code", ""),
-                        "teacher": teacher_map.get(lid, ""),
-                    }
-                
-                schedules = parse_schedule_from_draw_data(draw_data, lesson_map)
-                logger.info(f"Parsed {len(schedules)} schedule entries from draw API")
-                # 将 semester_name 注入到每个 schedule 中，以供 _upsert_course_event 使用
+                schedules = parse_print_data_schedules(print_data, lesson_map)
+                logger.info(f"Parsed {len(schedules)} schedule entries from print-data API")
+                # 将 semester_name 注入到每个 schedule 中
                 for s in schedules:
                     s["semester_name"] = semester_name
+            else:
+                logger.warning(f"Print-data API returned {print_resp.status_code}, body={print_resp.text[:500]}")
         except Exception as e:
-            logger.warning(f"Draw-table-data API failed: {type(e).__name__}: {e}")
+            logger.warning(f"Print-data API failed: {type(e).__name__}: {e}")
     
-    # 如果 draw API 没拿到数据，fallback 到旧方式（仅课程名）
+    # 如果 print-data API 没拿到数据，fallback 到旧方式（仅课程名）
     if not schedules:
         schedules = lessons
         logger.info(f"Falling back to simple lesson list ({len(schedules)} items)")
