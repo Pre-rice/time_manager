@@ -3,7 +3,7 @@ import base64
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import parse_qs, urlparse, urlencode
 
 import httpx
@@ -16,7 +16,17 @@ from app.core.crypto import encrypt_api_key, decrypt_api_key
 from app.models.fudan_credential import FudanCredential
 from app.models.event import Event
 from app.models.task import Task
-from app.services.fudan_parser import parse_fudan_data, parse_weekday, parse_weeks, period_to_time
+from app.services.fudan_parser import (
+    parse_fudan_data,
+    parse_weekday,
+    parse_weeks,
+    period_to_time,
+    parse_schedule_from_draw_data,
+    compute_semester_start,
+    build_rrule,
+    unit_to_time,
+    get_weekday_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -640,40 +650,51 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
     """
     执行 SSO 重连并获取所有数据
     返回: (lessons, html_exams, lesson_exams, schedules)
+    schedules 包含真正的排课数据: {title, weekday, weeks, start_unit, end_unit, location, teacher, code}
     """
     import re, json
     
     # Step 1: 先做 SSO 重连
     await _ensure_sso_session(client, COURSE_TABLE_URL)
     
-    # Step 2: 访问课表页面一次，提取 semesterId 和 studentId
+    # Step 2: 访问课表页面一次，提取 semesterId、studentId、personId 和学期名称
     resp = await client.get(COURSE_TABLE_URL, follow_redirects=True)
     logger.info(f"Course page size: {len(resp.text)}, logon={'logon' in resp.text[:300].lower()}")
     
     # 从 select option 中提取学期ID（格式 <option value="527">2026-2027学年1学期</option>）
     sem_options = re.findall(r'<option\s+value="(\d+)"[^>]*>([^<]+)</option>', resp.text)
     sid_match = re.search(r'studentIds\s*=\s*\[(\d+)\]', resp.text)
+    pid_match = re.search(r'personId\s*=\s*(\d+)', resp.text)
     
     semester_id = None
+    semester_name = ""
     student_id = ""
+    person_id = ""
     
     # 选第一个非暑期的学期
     if sem_options:
         for val, name in sem_options:
             if '暑' not in name:
                 semester_id = int(val)
+                semester_name = name
                 break
         if not semester_id and sem_options:
             semester_id = int(sem_options[0][0])
-        logger.info(f"Found semester: id={semester_id} from select options")
+            semester_name = sem_options[0][1]
+        logger.info(f"Found semester: id={semester_id}, name={semester_name}")
     
     if sid_match:
         student_id = sid_match.group(1)
         logger.info(f"Found studentId: {student_id}")
+    if pid_match:
+        person_id = pid_match.group(1)
+        logger.info(f"Found personId: {person_id}")
     
-    # Step 3: 调用 JSON API 获取课程和考试信息
+    # Step 3: 调用 JSON API 获取课程列表和考试信息
     lessons = []
     lesson_exams = []
+    raw_lessons = []
+    teacher_map = {}
     
     if semester_id and student_id:
         lesson_url = f"{COURSE_TABLE_URL}/getLesson"
@@ -709,8 +730,48 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
     # Step 4: 获取考试 HTML
     html_exams = await _fetch_exams(client)
     
-    # Step 5: schedules 简化为课程信息（目前没有排课时间数据就用课程名导入）
-    schedules = lessons
+    # Step 5: 通过 draw-table-data API 获取真正的排课数据
+    schedules = []
+    if semester_id and student_id:
+        try:
+            draw_url = "https://fdjwgl.fudan.edu.cn/ws/schedule-table/draw-table-data"
+            body = {
+                "semesterId": semester_id,
+                "studentIds": [int(student_id)],
+                "bizTypeId": 2,
+                "type": "student",
+                "personId": int(person_id) if person_id else 0,
+            }
+            logger.info(f"Calling draw API with body: semesterId={semester_id}, studentIds=[{student_id}], personId={person_id}")
+            draw_resp = await client.post(draw_url, json=body)
+            logger.info(f"Draw API response: status={draw_resp.status_code}, content_len={len(draw_resp.text)}, preview={draw_resp.text[:500]}")
+            
+            if draw_resp.status_code == 200 and len(draw_resp.text) > 20:
+                draw_data = draw_resp.json()
+                logger.info(f"Draw API returned type: {type(draw_data).__name__}")
+                if isinstance(draw_data, dict):
+                    logger.info(f"Draw API keys: {list(draw_data.keys())}")
+                
+                # 构建 lesson_map 供解析器使用
+                lesson_map = {}
+                for l in raw_lessons:
+                    lid = str(l.get("id", ""))
+                    course = l.get("course", {})
+                    lesson_map[lid] = {
+                        "title": course.get("nameZh", ""),
+                        "code": l.get("code", ""),
+                        "teacher": teacher_map.get(lid, ""),
+                    }
+                
+                schedules = parse_schedule_from_draw_data(draw_data, lesson_map)
+                logger.info(f"Parsed {len(schedules)} schedule entries from draw API")
+        except Exception as e:
+            logger.warning(f"Draw-table-data API failed: {type(e).__name__}: {e}")
+    
+    # 如果 draw API 没拿到数据，fallback 到旧方式（仅课程名）
+    if not schedules:
+        schedules = lessons
+        logger.info(f"Falling back to simple lesson list ({len(schedules)} items)")
     
     return lessons, html_exams, lesson_exams, schedules
 
@@ -811,47 +872,147 @@ async def sync_fudan_data(db: AsyncSession, user_id: uuid.UUID) -> dict:
 
 
 async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dict):
-    """课程 → 日程"""
+    """
+    课程 → 日程
+    
+    支持两种格式：
+    1. 从 draw API 获取的格式: {title, weekday(int), weeks(str), start_unit, end_unit, location, teacher, code}
+    2. 旧格式 (HTML 解析): {title, weekday(str), weeks(str), period(str), location, teacher}
+    """
     title = course.get('title', '')
     if not title:
         return
 
-    weekday = parse_weekday(course.get('weekday', ''))
-    weeks = parse_weeks(course.get('weeks', ''))
-    period_str = course.get('period', '')
+    # 检测是哪种格式
+    weekday_raw = course.get('weekday')
+    start_unit = course.get('start_unit')
+    end_unit = course.get('end_unit')
+    weeks_str = course.get('weeks', '')
     location = course.get('location', '')
+    teacher = course.get('teacher', '')
+    
+    if isinstance(weekday_raw, int) and start_unit is not None:
+        # 新格式：来自 draw API
+        weekday = weekday_raw  # 已经是数字
+        weeks = parse_weeks(weeks_str)
+        start_time_str, end_time_str = unit_to_time(start_unit)
+        if end_unit != start_unit:
+            _, end_time_str = unit_to_time(end_unit)
+    else:
+        # 旧格式：来自 HTML 解析 / fallback
+        weekday = parse_weekday(course.get('weekday', ''))
+        weeks = parse_weeks(weeks_str)
+        period_str = course.get('period', '')
+        start_time_str, end_time_str = period_to_time(period_str)
 
-    start_time_str, end_time_str = period_to_time(period_str)
-
+    # 构建描述
+    description_parts = []
+    if teacher:
+        description_parts.append(f"教师：{teacher}")
+    if weeks:
+        description_parts.append(f"第 {weeks[0]}-{weeks[-1]} 周")
+    if location:
+        description_parts.append(f"地点：{location}")
+    if weekday:
+        description_parts.append(f"每周{get_weekday_name(weekday)}")
+    
+    # 查找已存在的相同课程事件
     existing_query = await db.execute(
         select(Event).where(
             Event.user_id == user_id,
             Event.source == 'fudan',
             Event.title == title,
+            Event.event_type == 'class',
         ).limit(1)
     )
     existing = existing_query.scalar_one_or_none()
 
-    description_parts = []
-    if course.get('teacher'):
-        description_parts.append(f"教师：{course['teacher']}")
-    if weeks:
-        description_parts.append(f"第 {weeks[0]}-{weeks[-1]} 周")
-    if location:
-        description_parts.append(f"地点：{location}")
-
-    if not existing:
-        event = Event(
-            user_id=user_id,
-            title=title,
-            description=' | '.join(description_parts) if description_parts else None,
-            event_type='class',
-            source='fudan',
-            is_all_day=False,
-        )
-        db.add(event)
+    if weekday and weeks:
+        # 有排课信息 - 创建带时间的事件
+        try:
+            # 获取学期开始日期
+            semester_start = "2026-09-01"  # 默认，会被覆盖
+            # 使用 compute_semester_start 如果需要可从外部传入
+            first_week = weeks[0]
+            
+            # 计算起始日期
+            from datetime import datetime as dt, timedelta as td
+            start_date = dt.strptime(semester_start, "%Y-%m-%d")
+            # 学期第1周的周一 = semester_start，偏移到目标 weekday
+            days_off = weekday - 1  # 周一=0
+            first_week_base = start_date + td(days=days_off)
+            first_date = first_week_base + td(weeks=first_week - 1)
+            
+            # 解析时间
+            start_h, start_m = map(int, start_time_str.split(':'))
+            end_h, end_m = map(int, end_time_str.split(':'))
+            
+            first_start = first_date.replace(hour=start_h, minute=start_m)
+            first_end = first_date.replace(hour=end_h, minute=end_m)
+            
+            # 判断周次是否连续
+            is_consecutive = len(weeks) > 1 and all(
+                weeks[i] + 1 == weeks[i + 1] for i in range(len(weeks) - 1)
+            )
+            
+            rrule = None
+            if is_consecutive and len(weeks) > 1:
+                # 使用 RRULE 生成重复事件
+                rrule = f"FREQ=WEEKLY;COUNT={len(weeks)};BYDAY={_weekday_to_rrule(weekday)}"
+            
+            if not existing:
+                event = Event(
+                    user_id=user_id,
+                    title=title,
+                    description=' | '.join(description_parts) if description_parts else None,
+                    event_type='class',
+                    start_time=first_start,
+                    end_time=first_end,
+                    rrule=rrule,
+                    source='fudan',
+                    is_all_day=False,
+                )
+                db.add(event)
+            else:
+                existing.description = ' | '.join(description_parts) if description_parts else None
+                existing.start_time = first_start
+                existing.end_time = first_end
+                existing.rrule = rrule
+        except Exception as e:
+            logger.warning(f"Failed to create time-based event for {title}: {e}")
+            # fallback: 创建无时间事件
+            if not existing:
+                event = Event(
+                    user_id=user_id,
+                    title=title,
+                    description=' | '.join(description_parts) if description_parts else None,
+                    event_type='class',
+                    source='fudan',
+                    is_all_day=False,
+                )
+                db.add(event)
+            else:
+                existing.description = ' | '.join(description_parts) if description_parts else None
     else:
-        existing.description = ' | '.join(description_parts) if description_parts else None
+        # 没有排课信息 - 仅创建基本信息事件
+        if not existing:
+            event = Event(
+                user_id=user_id,
+                title=title,
+                description=' | '.join(description_parts) if description_parts else None,
+                event_type='class',
+                source='fudan',
+                is_all_day=False,
+            )
+            db.add(event)
+        else:
+            existing.description = ' | '.join(description_parts) if description_parts else None
+
+
+def _weekday_to_rrule(weekday: int) -> str:
+    """将 1-7 转换为 RRULE BYDAY"""
+    mapping = {1: "MO", 2: "TU", 3: "WE", 4: "TH", 5: "FR", 6: "SA", 7: "SU"}
+    return mapping.get(weekday, "MO")
 
 
 async def _upsert_exam_event(db: AsyncSession, user_id: uuid.UUID, exam: dict):

@@ -17,6 +17,9 @@ Thumbs.db
 # Docker
 backend/.env
 
+# Local development secrets (contains debug credentials)
+.env.local
+
 # Temp files
 nul
 

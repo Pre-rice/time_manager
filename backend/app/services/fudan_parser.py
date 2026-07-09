@@ -237,6 +237,296 @@ def parse_fudan_data(html: str, data_type: str) -> list[dict]:
     return []
 
 
+def parse_schedule_from_draw_data(draw_data: dict, lesson_map: dict) -> list[dict]:
+    """
+    解析 draw-table-data API 返回的课表排课数据。
+    
+    draw_data 典型结构 (复旦课表 JSON API):
+    {
+        "result": [
+            {
+                "courseId": 123,
+                "courseName": "高等数学",
+                "lessonId": 456,
+                "teacher": "张老师",
+                "schedules": [
+                    {
+                        "weekday": 1,           # 周一
+                        "startUnit": 1,         # 第1节
+                        "endUnit": 2,           # 第2节
+                        "weeks": "1-16",        # 周次
+                        "classroom": "H2108",
+                        "campusName": "邯郸"
+                    },
+                    ...
+                ]
+            }
+        ]
+    }
+    
+    或者另一种常见结构：
+    {
+        "lessonPlanList": [
+            {
+                "courseName": "...",
+                "lessonId": ...,
+                "teacherName": "...",
+                "scheduleList": [
+                    {
+                        "weekDay": 1,
+                        "startTime": 1,
+                        "endTime": 2,
+                        "weekPeriod": "1-16",
+                        "classRoomName": "..."
+                    }
+                ]
+            }
+        ]
+    }
+    
+    Args:
+        draw_data: draw-table-data API 返回的 JSON dict
+        lesson_map: { lesson_id: { title, code, teacher, ... } }
+    
+    Returns:
+        排课条目列表，每个条目包含:
+        { title, code, teacher, weekday, weeks, start_unit, end_unit, location }
+    """
+    schedules = []
+    
+    # 尝试从 lessonPlanList 解析（常见格式1）
+    lesson_plans = draw_data.get("lessonPlanList", [])
+    if not lesson_plans:
+        # 尝试从 result 解析（常见格式2）
+        result = draw_data.get("result", [])
+        if result:
+            schedules = _parse_result_format(result, lesson_map)
+            if schedules:
+                return schedules
+        # 尝试从 lessons 或 gridList 解析
+        for key in ("lessons", "gridList", "data", "items"):
+            items = draw_data.get(key, [])
+            if items:
+                schedules = _parse_result_format(items, lesson_map)
+                if schedules:
+                    return schedules
+        
+        # fallback: 如果 draw_data 直接是列表
+        if isinstance(draw_data, list):
+            schedules = _parse_result_format(draw_data, lesson_map)
+            if schedules:
+                return schedules
+        
+        return schedules
+    
+    for plan in lesson_plans:
+        title = plan.get("courseName", "") or lesson_map.get(str(plan.get("lessonId", "")), {}).get("title", "")
+        teacher = plan.get("teacherName", "") or plan.get("teacher", "") or lesson_map.get(str(plan.get("lessonId", "")), {}).get("teacher", "")
+        code = plan.get("courseCode", "") or lesson_map.get(str(plan.get("lessonId", "")), {}).get("code", "")
+        
+        schedule_list = plan.get("scheduleList", []) or plan.get("schedules", []) or plan.get("scheduleItems", [])
+        for entry in schedule_list:
+            weekday = entry.get("weekDay") or entry.get("weekday")
+            start_unit = entry.get("startUnit") or entry.get("startTime") or entry.get("start")
+            end_unit = entry.get("endUnit") or entry.get("endTime") or entry.get("end")
+            weeks_str = entry.get("weekPeriod") or entry.get("weeks") or entry.get("weekDescription") or ""
+            location = entry.get("classRoomName") or entry.get("classroom") or entry.get("location") or ""
+            
+            if weekday is None:
+                continue
+            
+            schedules.append({
+                "title": title,
+                "code": code,
+                "teacher": teacher,
+                "weekday": int(weekday),
+                "weeks": weeks_str,
+                "start_unit": int(start_unit) if start_unit is not None else None,
+                "end_unit": int(end_unit) if end_unit is not None else None,
+                "location": location,
+            })
+    
+    return schedules
+
+
+def _parse_result_format(items: list, lesson_map: dict) -> list[dict]:
+    """解析 result / lessons 格式的排课数据"""
+    schedules = []
+    
+    for item in items:
+        title = item.get("courseName", "") or item.get("title", "") or item.get("name", "")
+        teacher = item.get("teacherName", "") or item.get("teacher", "") or item.get("teacherName", "")
+        code = item.get("courseCode", "") or item.get("code", "")
+        
+        # 如果没有直接标题，尝试从 lesson_map 获取
+        lesson_id = item.get("lessonId") or item.get("id")
+        if not title and lesson_id:
+            lesson_info = lesson_map.get(str(lesson_id), {})
+            title = lesson_info.get("title", "")
+            if not teacher:
+                teacher = lesson_info.get("teacher", "")
+            if not code:
+                code = lesson_info.get("code", "")
+        
+        if not title:
+            continue
+        
+        # 获取排课明细（可能在不同的字段中）
+        schedule_entries = (
+            item.get("scheduleList", [])
+            or item.get("schedules", [])
+            or item.get("scheduleItems", [])
+            or item.get("gridList", [])
+        )
+        
+        # 如果这个 item 本身就有排课字段（扁平结构）
+        if not schedule_entries:
+            weekday = item.get("weekDay") or item.get("weekday") or item.get("week")
+            start_unit = item.get("startUnit") or item.get("startTime") or item.get("startUnit") or item.get("start")
+            end_unit = item.get("endUnit") or item.get("endTime") or item.get("end")
+            weeks_str = item.get("weekPeriod") or item.get("weeks") or item.get("weekDescription") or ""
+            location = item.get("classRoomName") or item.get("classroom") or item.get("location") or ""
+            
+            if weekday is not None:
+                schedules.append({
+                    "title": title,
+                    "code": code,
+                    "teacher": teacher,
+                    "weekday": int(weekday),
+                    "weeks": weeks_str,
+                    "start_unit": int(start_unit) if start_unit is not None else None,
+                    "end_unit": int(end_unit) if end_unit is not None else None,
+                    "location": location,
+                })
+        else:
+            for entry in schedule_entries:
+                weekday = entry.get("weekDay") or entry.get("weekday") or entry.get("week")
+                start_unit = entry.get("startUnit") or entry.get("startTime") or entry.get("start")
+                end_unit = entry.get("endUnit") or entry.get("endTime") or entry.get("end")
+                weeks_str = entry.get("weekPeriod") or entry.get("weeks") or entry.get("weekDescription") or ""
+                location = entry.get("classRoomName") or entry.get("classroom") or entry.get("location") or ""
+                
+                if weekday is None:
+                    continue
+                
+                schedules.append({
+                    "title": title,
+                    "code": code,
+                    "teacher": teacher,
+                    "weekday": int(weekday),
+                    "weeks": weeks_str,
+                    "start_unit": int(start_unit) if start_unit is not None else None,
+                    "end_unit": int(end_unit) if end_unit is not None else None,
+                    "location": location,
+                })
+    
+    return schedules
+
+
+def compute_semester_start(semester_id: int, semester_name: str = "") -> str | None:
+    """
+    计算学期开始日期。
+    复旦的学期通常：
+    - 秋季学期（9月~1月）：9月1日左右
+    - 春季学期（2月~6月）：2月24日左右
+    通过 semester_id 可以推算大致年份。
+    
+    更精确的方式是从学期名称中提取。
+    
+    Args:
+        semester_id: 学期ID (如 527)
+        semester_name: 学期名称 (如 "2026-2027学年1学期")
+    
+    Returns:
+        "YYYY-MM-DD" 格式的学期开始日期，或 None
+    """
+    # 优先从学期名称提取
+    if semester_name:
+        # "2026-2027学年1学期" -> 秋季, "2025-2026学年2学期" -> 春季
+        year_match = re.search(r'(\d{4})', semester_name)
+        if year_match:
+            base_year = int(year_match.group(1))
+            if '1学期' in semester_name or '秋' in semester_name:
+                return f"{base_year}-09-01"
+            elif '2学期' in semester_name or '春' in semester_name:
+                return f"{base_year}-02-24"
+    
+    # 通过 semester_id 推算 (粗略)
+    # 复旦从 ~500 开始对应 2020 年
+    if semester_id:
+        # 每学期 ID 大约递增 10，可以从已知对应关系推算
+        known = {518: "2025-09-01", 527: "2026-09-01"}  # 示例映射
+        if semester_id in known:
+            return known[semester_id]
+        # 粗略估算：每增加1约对应1个月
+        if semester_id >= 518:
+            year_offset = (semester_id - 518) / 10
+            return f"{2025 + int(year_offset)}-09-01"
+    
+    return None
+
+
+def build_rrule(weekday: int, weeks: list[int], semester_start: str, start_time_str: str) -> tuple[str, str, str]:
+    """
+    根据排课信息生成 RRULE 和具体的起止时间。
+    
+    策略：
+    - 如果周次是连续的 (如 1-16)，使用 RRULE (FREQ=WEEKLY;COUNT=16)
+    - 如果周次不连续，为每个周次分别创建日程
+    
+    Args:
+        weekday: 星期几 (1=周一, 7=周日)
+        weeks: 周次列表
+        semester_start: 学期开始日期 "YYYY-MM-DD"
+        start_time_str: 上课开始时间 "HH:MM"
+        end_time_str: 下课结束时间 "HH:MM"
+    
+    Returns:
+        (rrule_str, first_start_datetime_str, first_end_datetime_str)
+        如果 weeks 不连续，rrule_str 为空字符串
+    """
+    from datetime import datetime, timedelta
+    
+    if not weeks:
+        return ("", "", "")
+    
+    # 判断是否连续
+    is_consecutive = len(weeks) > 1 and all(
+        weeks[i] + 1 == weeks[i + 1] for i in range(len(weeks) - 1)
+    )
+    
+    # 计算第一次上课的日期
+    start_date = datetime.strptime(semester_start, "%Y-%m-%d")
+    # 学期第1周的周一 = semester_start
+    # 计算第1周中 weekday 对应的日期
+    days_offset = weekday - 1  # 周一=0偏移
+    first_week_date = start_date + timedelta(days=days_offset)
+    
+    if not weeks:
+        return ("", "", "")
+    
+    # 第一周的上课日期
+    first_week = weeks[0]
+    first_date = first_week_date + timedelta(weeks=first_week - 1)
+    
+    first_start = f"{first_date.strftime('%Y-%m-%d')} {start_time_str}"
+    
+    if is_consecutive and len(weeks) > 1:
+        rrule = f"FREQ=WEEKLY;COUNT={len(weeks)};BYDAY={_weekday_to_rrule(weekday)}"
+        return (rrule, first_start, "")
+    elif len(weeks) == 1:
+        return ("", first_start, "")
+    else:
+        # 不连续 - 需要分别处理
+        return ("", first_start, "")
+
+
+def _weekday_to_rrule(weekday: int) -> str:
+    """将 1-7 转换为 RRULE 的 BYDAY 值 (MO,TU,WE,TH,FR,SA,SU)"""
+    mapping = {1: "MO", 2: "TU", 3: "WE", 4: "TH", 5: "FR", 6: "SA", 7: "SU"}
+    return mapping.get(weekday, "MO")
+
+
 def parse_weekday(weekday_str: str) -> int:
     """将中文星期转换为数字 (1=周一, 7=周日)"""
     mapping = {
@@ -302,3 +592,16 @@ def period_to_time(period_str: str) -> tuple[str, str]:
     end = period_map.get(last, (None, '09:30'))[1]
     
     return (start, end)
+
+
+def unit_to_time(unit: int) -> str:
+    """将节次数字转换为时间字符串"""
+    period_map = {
+        1: ('08:00', '08:45'), 2: ('08:50', '09:35'),
+        3: ('09:50', '10:35'), 4: ('10:40', '11:25'),
+        5: ('11:30', '12:15'), 6: ('13:30', '14:15'),
+        7: ('14:20', '15:05'), 8: ('15:20', '16:05'),
+        9: ('16:10', '16:55'), 10: ('17:00', '17:45'),
+        11: ('18:30', '19:15'), 12: ('19:20', '20:05'),
+    }
+    return period_map.get(unit, ('08:00', '09:30'))
