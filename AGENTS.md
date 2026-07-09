@@ -178,6 +178,13 @@ authserver/login (获取 lck + entityId)
 | **考试安排（含期中）** | HTML 解析 | `GET /student/for-std/exam-arrange/` |
 | **课表排课（每周时间）** | 待实现 | 需要从 `all-courses` 或 `draw-table-data` API 获取 |
 
+### 开发调试凭据
+
+> ⚠️ 敏感信息存储在 `.env.local` 文件中
+>（该文件已被 `.gitignore` 排除，不会提交到 Git 仓库）
+>
+> AI 代理在需要执行测试时，请先 `read_file .env.local` 获取凭据。
+
 ### 已知问题
 
 1. **排课数据未导入** — 课表每周上课时间、节次、地点仍需要从 `all-courses` API 或 `draw-table-data` API 获取
