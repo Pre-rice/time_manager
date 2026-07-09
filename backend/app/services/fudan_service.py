@@ -650,20 +650,40 @@ async def _fetch_course_schedules(client: httpx.AsyncClient) -> list[dict]:
 def _parse_semester_start_date(page_html: str) -> str | None:
     """
     从课表页面的 JS 中解析学期 startDate。
-    
-    JS 格式：
-    var semesters = JSON.parse('[{"id":527,"name":"2026-2027学年2学期","startDate":"2026-02-22","endDate":"2026-06-28"}]');
+    页面中 JS 格式: var semesters = JSON.parse('[{...}]');
     
     Returns:
-        "YYYY-MM-DD" 格式，或 None
+        "YYYY-MM-DD" 格式的周一日期，或 None
     """
-    import re
-    # 找到所有学期数据
-    matches = re.findall(r'\"startDate\"\s*:\s*\"(\d{4}-\d{2}-\d{2})\"', page_html)
-    ids = re.findall(r'\"id\"\s*:\s*(\d+)', page_html)
+    import re, json, ast
+    
+    # 查找所有 startDate 和 id 出现的位置，直接匹配日期
+    # 页面中的格式通常是: ...startDate:"2026-09-06"...
+    # 无论是否转义，日期格式 YYYY-MM-DD 是唯一的
+    date_pattern = r'(?:startDate)[=:]\s*["\']?(\d{4}-\d{2}-\d{2})["\']?'
+    id_pattern = r'(?:id)[=:]\s*["\']?(\d+)["\']?'
+    
+    # 提取所有可能的学期数据
+    dates = re.findall(r'"startDate"\s*:\s*"(\d{4}-\d{2}-\d{2})"', page_html)
+    ids = re.findall(r'"id"\s*:\s*(\d+)', page_html)
+    
+    # 如果常规格式没找到，尝试转义格式 \\"startDate\\":\\"2026-09-06\\"
+    if not dates:
+        dates = re.findall(r'\\"startDate\\"\s*:\s*\\"(\d{4}-\d{2}-\d{2})\\"', page_html)
+        ids = re.findall(r'\\"id\\"\s*:\s*(\d+)', page_html)
+    
+    # 如果还没找到，尝试更宽松的匹配
+    if not dates:
+        dates = re.findall(r'startDate["\':]+\s*["\']*(\d{4}-\d{2}-\d{2})', page_html)
+        ids = re.findall(r'"id"\s*[=:]\s*["\']*(\d+)', page_html)
+        if not ids:
+            ids = re.findall(r'\\"id\\"\s*[=:]\s*["\']*(\d+)', page_html)
+    
+    if not dates:
+        return None
     
     # 选择非暑期学期
-    sem_options = re.findall(r'<option value=\"(\d+)\"[^>]*>([^<]+)</option>', page_html)
+    sem_options = re.findall(r'<option\s+value="(\d+)"[^>]*>([^<]+)</option>', page_html)
     selected_id = None
     for val, name in sem_options:
         if '暑' not in name:
@@ -672,16 +692,18 @@ def _parse_semester_start_date(page_html: str) -> str | None:
     if not selected_id and sem_options:
         selected_id = sem_options[0][0]
     
-    # 找到对应 startDate
+    # 匹配 startDate 到选中学期
     start_date_str = None
-    for i, sid in enumerate(ids):
-        if sid == selected_id and i < len(matches):
-            start_date_str = matches[i]
-            break
-    if not start_date_str:
-        start_date_str = matches[0] if matches else None
+    if selected_id and len(dates) == len(ids):
+        for i, sid in enumerate(ids):
+            if sid == selected_id and i < len(dates):
+                start_date_str = dates[i]
+                break
     
-    # JWGL 的 startDate 是周日，需要加 1 天才是周一（参考 DanXi 源码）
+    if not start_date_str and dates:
+        # 保守起见，取最早的日期（秋季学期通常早于春季）
+        start_date_str = dates[0] if dates else None
+    
     if start_date_str:
         from datetime import datetime, timedelta
         try:
@@ -690,7 +712,6 @@ def _parse_semester_start_date(page_html: str) -> str | None:
             return dt.strftime("%Y-%m-%d")
         except ValueError:
             return start_date_str
-    
     return None
 
 
@@ -953,14 +974,9 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
         # 新格式：来自 print-data API
         weekday = weekday_raw  # 已经是数字，1=周一
         weeks = parse_weeks(weeks_str)
-        start_time_str, end_time_str = unit_to_time(start_unit)
-        if end_unit and end_unit != start_unit:
-            _, end_time_str = unit_to_time(end_unit)
-        # start_time 用开始节次，end_time 用结束节次
-        _, start_end = unit_to_time(start_unit)
-        end_start, end_time_str = unit_to_time(end_unit)
-        # 实际 start=第一节课开始, end=最后一节课的结束
+        # start=第一节课的开始时间, end=最后一节课的结束时间
         start_time_str, _ = unit_to_time(start_unit)
+        _, end_time_str = unit_to_time(end_unit)
     else:
         # 旧格式：来自 HTML 解析 / fallback
         weekday = parse_weekday(course.get('weekday', ''))

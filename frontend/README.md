@@ -1,17 +1,29 @@
-# frontend
+# Time Manager — Frontend
 
-A new Flutter project.
+> Time Manager 的前端 Flutter 项目。
 
-## Getting Started
+## 构建
 
-This project is a starting point for a Flutter application.
+```bash
+flutter build web
+```
 
-A few resources to get you started if this is your first Flutter project:
+## 部署
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+```bash
+python -m http.server 8080 -d build/web
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+前端默认运行在 <http://localhost:8080>。
+
+## 技术栈
+
+- Flutter + Riverpod
+- GoRouter 路由
+- Material 3 设计
+- Dio HTTP 客户端
+- `table_calendar` 日历组件
+
+## 许可证
+
+AGPLv3 — 详见项目根目录的 [LICENSE](../LICENSE) 文件。

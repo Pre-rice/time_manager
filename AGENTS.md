@@ -232,6 +232,10 @@ authserver/login (获取 lck + entityId)
 - [x] `_get_client()` 修复 SSL 验证 ✅
 - [x] 学期开始日期硬编码修复 ✅
 - [x] **课表排课数据导入** — 使用 `print-data` API 替换失败的 `draw-table-data` API ✅
+- [x] 修正节次时间表（14 节标准教务处时间）
+- [x] weekday 映射修正（1=周一，直接透传）
+- [x] 学期开始日期解析（从 JS 提取 startDate 并周日→周一）
+- [x] 修复 upsert 去重（title+weekday 唯一匹配）
 - [ ] `last_sync_at` 前端显示 UTC+8 时区修复
 - [ ] 前端 RRULE 展示和编辑
 - [ ] eLearning 作业抓取
