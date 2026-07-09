@@ -172,7 +172,7 @@ authserver/login (获取 lck + entityId)
 |------|------|-----|
 | **课程列表+考试** | JSON API | `GET /student/for-std/course-table/getLesson?semesterId={}&studentId={}` |
 | **考试安排（含期中）** | HTML 解析 | `GET /student/for-std/exam-arrange/` |
-| **课表排课（每周时间）** | 待实现 | `draw-table-data` API 返回 HTML，需参考 DanXi 源码 |
+| **课表排课（每周时间）** | JSON API | `GET /student/for-std/course-table/semester/{sem_id}/print-data` |
 
 ### 开发调试凭据
 
@@ -183,7 +183,7 @@ authserver/login (获取 lck + entityId)
 
 ### 已知问题
 
-1. **排课数据未导入** — `draw-table-data` API 返回了 HTML（可能是 403 或重定向），说明认证或请求参数有问题。需要参考 DanXi（复旦官方开源 App）的源码来找到正确的课表 API 端点
+1. ~~**排课数据未导入** — `draw-table-data` API 返回了 HTML~~ ✅ 已修复：参考 DanXi 源码改为使用 `print-data` API（2026-07-09）
 2. **`_get_client()` 缺少 `verify=False`** — 已修复（2026-07-09）
 3. **`semester_start` 硬编码** — 已修复，改用 `compute_semester_start()` 根据学期名称自动计算（2026-07-09）
 4. **Windows GBK 编码** — cmd 终端输出 Unicode 时报错，调试困难
@@ -231,20 +231,20 @@ authserver/login (获取 lck + entityId)
 - [x] sync 导入 37 条考试日程 ✅
 - [x] `_get_client()` 修复 SSL 验证 ✅
 - [x] 学期开始日期硬编码修复 ✅
-- [ ] **课表排课数据导入** — `draw-table-data` 返回 HTML，需参考 DanXi 源码找到正确 API
+- [x] **课表排课数据导入** — 使用 `print-data` API 替换失败的 `draw-table-data` API ✅
 - [ ] `last_sync_at` 前端显示 UTC+8 时区修复
 - [ ] 前端 RRULE 展示和编辑
 - [ ] eLearning 作业抓取
 
 ### 关键技术障碍（2026-07-09 记录）
 
-**`draw-table-data` API 返回 HTML 而非 JSON**：
-- 日志显示 `Draw API non-200: body=<!DOCTYPE html>...`，说明该 API 端点要么需要不同的认证方式，要么已经废弃
-- Docker exec 的 Python 输出缓冲问题导致无法直接在容器内调试
-- 下一步需要参考 [DanXi](https://github.com/DanXi-Dev/DanXi)（复旦官方开源项目）的源码中找到正确的课表数据 API
-  - DanXi 使用 Flutter 和 Dart 开发
-  - 重点关注 `lib/api/` 和 `lib/models/` 中的课表相关代码
-  - 查看 DanXi 是如何获取课程排课（每周时间、地点）的
+**`draw-table-data` API 返回 HTML 而非 JSON** ✅ 已修复：
+- 日志显示 `Draw API non-200: body=<!DOCTYPE html>...`，说明该 API 端点已废弃或需要不同认证
+- 参考 [DanXi](https://github.com/DanXi-Dev/DanXi)（复旦官方开源 Flutter App）的源码找到了正确 API
+  - DanXi 使用 `print-data` API（`/student/for-std/course-table/semester/{sem_id}/print-data`）
+  - 返回结构包含 `studentTableVms[].activities[]`，每个 activity 有 courseName、weekday、startUnit、endUnit、weekIndexes（数组）、room、teachers 等字段
+  - 使用 GET 请求，无需 POST body
+- 修复后 sync 成功导入 37 个日程（含完整的课程排课 + 考试）
 
 ### Phase 6 🔜 实时与提醒
 ### Phase 7 🔜 界面美化

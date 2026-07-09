@@ -240,83 +240,26 @@ def parse_fudan_data(html: str, data_type: str) -> list[dict]:
 def parse_schedule_from_draw_data(draw_data: dict, lesson_map: dict) -> list[dict]:
     """
     解析 draw-table-data API 返回的课表排课数据。
-    
-    draw_data 典型结构 (复旦课表 JSON API):
-    {
-        "result": [
-            {
-                "courseId": 123,
-                "courseName": "高等数学",
-                "lessonId": 456,
-                "teacher": "张老师",
-                "schedules": [
-                    {
-                        "weekday": 1,           # 周一
-                        "startUnit": 1,         # 第1节
-                        "endUnit": 2,           # 第2节
-                        "weeks": "1-16",        # 周次
-                        "classroom": "H2108",
-                        "campusName": "邯郸"
-                    },
-                    ...
-                ]
-            }
-        ]
-    }
-    
-    或者另一种常见结构：
-    {
-        "lessonPlanList": [
-            {
-                "courseName": "...",
-                "lessonId": ...,
-                "teacherName": "...",
-                "scheduleList": [
-                    {
-                        "weekDay": 1,
-                        "startTime": 1,
-                        "endTime": 2,
-                        "weekPeriod": "1-16",
-                        "classRoomName": "..."
-                    }
-                ]
-            }
-        ]
-    }
-    
-    Args:
-        draw_data: draw-table-data API 返回的 JSON dict
-        lesson_map: { lesson_id: { title, code, teacher, ... } }
-    
-    Returns:
-        排课条目列表，每个条目包含:
-        { title, code, teacher, weekday, weeks, start_unit, end_unit, location }
+    （已废弃，保留兼容）
     """
     schedules = []
-    
-    # 尝试从 lessonPlanList 解析（常见格式1）
     lesson_plans = draw_data.get("lessonPlanList", [])
     if not lesson_plans:
-        # 尝试从 result 解析（常见格式2）
         result = draw_data.get("result", [])
         if result:
             schedules = _parse_result_format(result, lesson_map)
             if schedules:
                 return schedules
-        # 尝试从 lessons 或 gridList 解析
         for key in ("lessons", "gridList", "data", "items"):
             items = draw_data.get(key, [])
             if items:
                 schedules = _parse_result_format(items, lesson_map)
                 if schedules:
                     return schedules
-        
-        # fallback: 如果 draw_data 直接是列表
         if isinstance(draw_data, list):
             schedules = _parse_result_format(draw_data, lesson_map)
             if schedules:
                 return schedules
-        
         return schedules
     
     for plan in lesson_plans:
@@ -358,7 +301,6 @@ def _parse_result_format(items: list, lesson_map: dict) -> list[dict]:
         teacher = item.get("teacherName", "") or item.get("teacher", "") or item.get("teacherName", "")
         code = item.get("courseCode", "") or item.get("code", "")
         
-        # 如果没有直接标题，尝试从 lesson_map 获取
         lesson_id = item.get("lessonId") or item.get("id")
         if not title and lesson_id:
             lesson_info = lesson_map.get(str(lesson_id), {})
@@ -371,7 +313,6 @@ def _parse_result_format(items: list, lesson_map: dict) -> list[dict]:
         if not title:
             continue
         
-        # 获取排课明细（可能在不同的字段中）
         schedule_entries = (
             item.get("scheduleList", [])
             or item.get("schedules", [])
@@ -379,7 +320,6 @@ def _parse_result_format(items: list, lesson_map: dict) -> list[dict]:
             or item.get("gridList", [])
         )
         
-        # 如果这个 item 本身就有排课字段（扁平结构）
         if not schedule_entries:
             weekday = item.get("weekDay") or item.get("weekday") or item.get("week")
             start_unit = item.get("startUnit") or item.get("startTime") or item.get("startUnit") or item.get("start")
@@ -427,35 +367,11 @@ def parse_print_data_schedules(print_data: dict, lesson_map: dict) -> list[dict]
     """
     解析 print-data API 返回的课表排课数据。
     
-    print-data API URL:
-    https://fdjwgl.fudan.edu.cn/student/for-std/course-table/semester/{sem_id}/print-data
-    
-    返回结构示例（参考 DanXi 源码）:
-    {
-        "studentTableVms": [
-            {
-                "id": 485841,
-                "name": "...",
-                "activities": [
-                    {
-                        "courseName": "高等数学A",
-                        "lessonId": 123456,
-                        "lessonCode": "MATH120001.01",
-                        "teachers": ["张老师"],
-                        "weekday": 1,           # 1=周一, 7=周日
-                        "startUnit": 1,         # 第1节
-                        "endUnit": 2,           # 第2节
-                        "weekIndexes": [1,2,3,...,16],  # 周次列表
-                        "room": "H2108"
-                    },
-                    ...
-                ]
-            }
-        ],
-        "semester": {
-            "startDate": "2026-08-30"  # 周日，实际周一=startDate+1
-        }
-    }
+    weekday 映射规则：
+    - 复旦 print-data API 返回的 weekday 字段是 1-indexed，
+      但星期从周日开始: 1=周日, 2=周一, 3=周二, 4=周三, 5=周四, 6=周五, 7=周六
+    - 我们存储为 ISO weekday 格式: 1=周一, 7=周日
+    - 转换: 1→7(周日), 2→1(周一), 3→2(周二), 4→3(周三), ... 7→6(周六)
     
     Args:
         print_data: print-data API 返回的 JSON dict
@@ -463,7 +379,8 @@ def parse_print_data_schedules(print_data: dict, lesson_map: dict) -> list[dict]
     
     Returns:
         排课条目列表
-        { title, code, teacher, weekday, weeks, start_unit, end_unit, location }
+        { title, code, teacher, weekday, weeks_str, start_unit, end_unit, location }
+        其中 weekday: 1=周一, 7=周日
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -480,7 +397,6 @@ def parse_print_data_schedules(print_data: dict, lesson_map: dict) -> list[dict]
             course_name = activity.get("courseName", "")
             lesson_id = str(activity.get("lessonId", ""))
             
-            # 从 lesson_map 获取补充信息
             lesson_info = lesson_map.get(lesson_id, {})
             title = course_name or lesson_info.get("title", "")
             if not title:
@@ -499,10 +415,13 @@ def parse_print_data_schedules(print_data: dict, lesson_map: dict) -> list[dict]
             if weekday is None or start_unit is None:
                 continue
             
-            # 将 weekIndexes 转换为 weeks 字符串（如 "1-16"）
+            # 转换 weekday: 复旦教务系统 1=周日,2=周一,...,7=周六
+            # 转为 ISO weekday: 1=周一,7=周日
+            _JWGL_TO_ISO = {1:7, 2:1, 3:2, 4:3, 5:4, 6:5, 7:6}
+            weekday = _JWGL_TO_ISO.get(int(weekday), int(weekday))
+            
             if week_indexes:
                 week_indexes = sorted(week_indexes)
-                # 判断是否连续
                 if len(week_indexes) > 1 and all(
                     week_indexes[i] + 1 == week_indexes[i + 1] for i in range(len(week_indexes) - 1)
                 ):
@@ -697,8 +616,8 @@ def period_to_time(period_str: str) -> tuple[str, str]:
     return (start, end)
 
 
-def unit_to_time(unit: int) -> str:
-    """将节次数字转换为时间字符串"""
+def unit_to_time(unit: int) -> tuple[str, str]:
+    """将节次数字转换为起止时间字符串"""
     period_map = {
         1: ('08:00', '08:45'), 2: ('08:50', '09:35'),
         3: ('09:50', '10:35'), 4: ('10:40', '11:25'),

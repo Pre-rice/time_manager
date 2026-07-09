@@ -1,4 +1,3 @@
-
 import base64
 import json
 import logging
@@ -648,10 +647,57 @@ async def _fetch_course_schedules(client: httpx.AsyncClient) -> list[dict]:
     return schedules
 
 
-async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list, list]:
+def _parse_semester_start_date(page_html: str) -> str | None:
+    """
+    从课表页面的 JS 中解析学期 startDate。
+    
+    JS 格式：
+    var semesters = JSON.parse('[{"id":527,"name":"2026-2027学年2学期","startDate":"2026-02-22","endDate":"2026-06-28"}]');
+    
+    Returns:
+        "YYYY-MM-DD" 格式，或 None
+    """
+    import re
+    # 找到所有学期数据
+    matches = re.findall(r'\"startDate\"\s*:\s*\"(\d{4}-\d{2}-\d{2})\"', page_html)
+    ids = re.findall(r'\"id\"\s*:\s*(\d+)', page_html)
+    
+    # 选择非暑期学期
+    sem_options = re.findall(r'<option value=\"(\d+)\"[^>]*>([^<]+)</option>', page_html)
+    selected_id = None
+    for val, name in sem_options:
+        if '暑' not in name:
+            selected_id = val
+            break
+    if not selected_id and sem_options:
+        selected_id = sem_options[0][0]
+    
+    # 找到对应 startDate
+    start_date_str = None
+    for i, sid in enumerate(ids):
+        if sid == selected_id and i < len(matches):
+            start_date_str = matches[i]
+            break
+    if not start_date_str:
+        start_date_str = matches[0] if matches else None
+    
+    # JWGL 的 startDate 是周日，需要加 1 天才是周一（参考 DanXi 源码）
+    if start_date_str:
+        from datetime import datetime, timedelta
+        try:
+            dt = datetime.strptime(start_date_str, "%Y-%m-%d")
+            dt += timedelta(days=1)  # 周日 → 周一
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            return start_date_str
+    
+    return None
+
+
+async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list, list, str]:
     """
     执行 SSO 重连并获取所有数据
-    返回: (lessons, html_exams, lesson_exams, schedules)
+    返回: (lessons, html_exams, lesson_exams, schedules, semester_start_date)
     schedules 包含真正的排课数据: {title, weekday, weeks, start_unit, end_unit, location, teacher, code}
     """
     import re, json
@@ -667,8 +713,12 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
     except Exception as e:
         logger.warning(f"Failed to load course page: {type(e).__name__}: {e}")
         # 如果课表页面都无法访问，直接返回空结果
-        return [], [], [], []
+        return [], [], [], [], ""
     logger.info(f"Course page size: {len(resp.text)}, logon={'logon' in resp.text[:300].lower()}")
+    
+    # 从页面 JS 中解析学期开始日期（精确到具体日期）
+    semester_start_date = _parse_semester_start_date(resp.text)
+    logger.info(f"Semester start date from page: {semester_start_date}")
     
     # 从 select option 中提取学期ID（格式 <option value="527">2026-2027学年1学期</option>）
     sem_options = re.findall(r'<option\s+value="(\d+)"[^>]*>([^<]+)</option>', resp.text)
@@ -739,10 +789,10 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
     # Step 4: 获取考试 HTML
     html_exams = await _fetch_exams(client)
     
-    # Step 5: 通过 print-data API 获取真正的排课数据（参考 DanXi 源码）
+    # Step 5: 通过 print-data API 获取真正的排课数据
     schedules = []
     if semester_id and student_id:
-        # 构建 lesson_map（从 raw_lessons 获取课程信息）
+        # 构建 lesson_map
         lesson_map = {}
         for l in raw_lessons:
             lid = str(l.get("id", ""))
@@ -757,28 +807,27 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
             print_data_url = PRINT_DATA_URL.replace("{sem_id}", str(semester_id))
             logger.info(f"Calling print-data API: {print_data_url}")
             print_resp = await client.get(print_data_url, follow_redirects=True)
-            logger.info(f"Print-data API response: status={print_resp.status_code}, content_len={len(print_resp.text)}")
             
             if print_resp.status_code == 200 and len(print_resp.text) > 20:
                 print_data = print_resp.json()
-                logger.info(f"Print-data API keys: {list(print_data.keys()) if isinstance(print_data, dict) else 'N/A'}")
-                
                 schedules = parse_print_data_schedules(print_data, lesson_map)
                 logger.info(f"Parsed {len(schedules)} schedule entries from print-data API")
-                # 将 semester_name 注入到每个 schedule 中
+                # 注入 semester_name 和 semester_start_date
                 for s in schedules:
                     s["semester_name"] = semester_name
+                    if semester_start_date:
+                        s["semester_start_date"] = semester_start_date
             else:
-                logger.warning(f"Print-data API returned {print_resp.status_code}, body={print_resp.text[:500]}")
+                logger.warning(f"Print-data API returned {print_resp.status_code}")
         except Exception as e:
             logger.warning(f"Print-data API failed: {type(e).__name__}: {e}")
     
-    # 如果 print-data API 没拿到数据，fallback 到旧方式（仅课程名）
+    # 如果 print-data API 没拿到数据，fallback 到旧方式
     if not schedules:
         schedules = lessons
         logger.info(f"Falling back to simple lesson list ({len(schedules)} items)")
     
-    return lessons, html_exams, lesson_exams, schedules
+    return lessons, html_exams, lesson_exams, schedules, semester_start_date or ""
 
 
 async def sync_fudan_data(db: AsyncSession, user_id: uuid.UUID) -> dict:
@@ -801,7 +850,7 @@ async def sync_fudan_data(db: AsyncSession, user_id: uuid.UUID) -> dict:
 
     try:
         # 执行 SSO 重连并获取数据
-        lessons, html_exams, lesson_exams, schedules = await _do_sso_and_fetch(client)
+        lessons, html_exams, lesson_exams, schedules, semester_start_date = await _do_sso_and_fetch(client)
         
         # 更新 cookies (可能 SSO 重连产生了新 cookie)
         try:
@@ -881,8 +930,11 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
     """
     课程 → 日程
     
+    使用 title + weekday + start_unit 做唯一匹配，
+    因为同一课程可能有多个时间槽（如数据结构：周一11-13节 + 周二1-2节）。
+    
     支持两种格式：
-    1. 从 draw API 获取的格式: {title, weekday(int), weeks(str), start_unit, end_unit, location, teacher, code}
+    1. 从 print-data API 获取的格式: {title, weekday(int), weeks(str), start_unit, end_unit, location, teacher, code, semester_start_date}
     2. 旧格式 (HTML 解析): {title, weekday(str), weeks(str), period(str), location, teacher}
     """
     title = course.get('title', '')
@@ -898,12 +950,17 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
     teacher = course.get('teacher', '')
     
     if isinstance(weekday_raw, int) and start_unit is not None:
-        # 新格式：来自 draw API
-        weekday = weekday_raw  # 已经是数字
+        # 新格式：来自 print-data API
+        weekday = weekday_raw  # 已经是数字，1=周一
         weeks = parse_weeks(weeks_str)
         start_time_str, end_time_str = unit_to_time(start_unit)
-        if end_unit != start_unit:
+        if end_unit and end_unit != start_unit:
             _, end_time_str = unit_to_time(end_unit)
+        # start_time 用开始节次，end_time 用结束节次
+        _, start_end = unit_to_time(start_unit)
+        end_start, end_time_str = unit_to_time(end_unit)
+        # 实际 start=第一节课开始, end=最后一节课的结束
+        start_time_str, _ = unit_to_time(start_unit)
     else:
         # 旧格式：来自 HTML 解析 / fallback
         weekday = parse_weekday(course.get('weekday', ''))
@@ -922,30 +979,44 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
     if weekday:
         description_parts.append(f"每周{get_weekday_name(weekday)}")
     
-    # 查找已存在的相同课程事件
+    # 使用 title + weekday + start_unit 作为唯一标识
     existing_query = await db.execute(
         select(Event).where(
             Event.user_id == user_id,
             Event.source == 'fudan',
-            Event.title == title,
             Event.event_type == 'class',
-        ).limit(1)
+            Event.title == title,
+            # 通过 description 包含周几信息来匹配
+        ).limit(10)
     )
-    existing = existing_query.scalar_one_or_none()
+    existing_events = existing_query.scalars().all()
+    
+    # 找到完全匹配（同一天 + 同节次）
+    existing = None
+    for ev in existing_events:
+        if ev.start_time:
+            ev_weekday = ev.start_time.isoweekday()  # 1=周一
+            if ev_weekday == weekday:
+                existing = ev
+                break
 
     if weekday and weeks:
         # 有排课信息 - 创建带时间的事件
         try:
-            # 获取学期开始日期（优先从 schedule 携带的 semester_name 计算）
-            semester_name = course.get('semester_name', '')
-            computed = compute_semester_start(None, semester_name)
-            semester_start = computed if computed else "2026-09-01"
+            # 优先使用从页面解析的学期开始日期
+            semester_start_date = course.get('semester_start_date', '')
+            if not semester_start_date:
+                semester_name = course.get('semester_name', '')
+                computed = compute_semester_start(None, semester_name)
+                semester_start_date = computed if computed else "2026-09-01"
+            
             first_week = weeks[0]
             
             # 计算起始日期
             from datetime import datetime as dt, timedelta as td
-            start_date = dt.strptime(semester_start, "%Y-%m-%d")
-            # 学期第1周的周一 = semester_start，偏移到目标 weekday
+            start_date = dt.strptime(semester_start_date, "%Y-%m-%d")
+            # 学期第1周的周一 = semester_start_date
+            # 注意：复旦课表从周一开始，semester_start_date 就是第1周周一的日期
             days_off = weekday - 1  # 周一=0
             first_week_base = start_date + td(days=days_off)
             first_date = first_week_base + td(weeks=first_week - 1)
@@ -980,13 +1051,15 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
                     is_all_day=False,
                 )
                 db.add(event)
+                logger.info(f"Created class event: {title} weekday={weekday} start={first_start} rrule={rrule}")
             else:
                 existing.description = ' | '.join(description_parts) if description_parts else None
                 existing.start_time = first_start
                 existing.end_time = first_end
                 existing.rrule = rrule
+                logger.info(f"Updated class event: {title} weekday={weekday} start={first_start} rrule={rrule}")
         except Exception as e:
-            logger.warning(f"Failed to create time-based event for {title}: {e}")
+            logger.warning(f"Failed to create time-based event for {title} (weekday={weekday}): {e}")
             # fallback: 创建无时间事件
             if not existing:
                 event = Event(
