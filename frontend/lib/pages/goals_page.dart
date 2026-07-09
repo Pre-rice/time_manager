@@ -25,7 +25,7 @@ class GoalsPage extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('长期目标')),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _showAddDialog(context, ref),
+        onPressed: () => _showEditDialog(context, ref, null),
         child: const Icon(Icons.add),
       ),
       body: goalsAsync.when(
@@ -58,10 +58,7 @@ class GoalsPage extends ConsumerWidget {
                             Expanded(child: Text(goal['title'] ?? '', style: theme.textTheme.titleMedium)),
                             IconButton(
                               icon: const Icon(Icons.delete_outline, size: 20),
-                              onPressed: () async {
-                                await ref.read(apiServiceProvider).deleteGoal(goal['id']);
-                                ref.invalidate(_goalsProvider);
-                              },
+                              onPressed: () => _confirmDelete(context, ref, goal),
                             ),
                           ],
                         ),
@@ -90,13 +87,24 @@ class GoalsPage extends ConsumerWidget {
                           ],
                         ),
                         const SizedBox(height: 8),
-                        SizedBox(
-                          width: double.infinity,
-                          child: OutlinedButton.icon(
-                            icon: const Icon(Icons.update, size: 16),
-                            label: const Text('更新进度'),
-                            onPressed: () => _showProgressDialog(context, ref, goal),
-                          ),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                icon: const Icon(Icons.update, size: 16),
+                                label: const Text('更新进度'),
+                                onPressed: () => _showProgressDialog(context, ref, goal),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                icon: const Icon(Icons.edit, size: 16),
+                                label: const Text('编辑'),
+                                onPressed: () => _showEditDialog(context, ref, goal),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -108,6 +116,28 @@ class GoalsPage extends ConsumerWidget {
         },
       ),
     );
+  }
+
+  Future<void> _confirmDelete(BuildContext context, WidgetRef ref, Map<String, dynamic> goal) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除目标'),
+        content: Text('确定要删除"${goal['title']}"吗？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await ref.read(apiServiceProvider).deleteGoal(goal['id']);
+      ref.invalidate(_goalsProvider);
+    }
   }
 
   Widget _emptyView(ThemeData theme) {
@@ -125,22 +155,26 @@ class GoalsPage extends ConsumerWidget {
     );
   }
 
-  Future<void> _showAddDialog(BuildContext context, WidgetRef ref) async {
-    final titleCtrl = TextEditingController();
-    final targetCtrl = TextEditingController();
-    final unitCtrl = TextEditingController();
+  Future<void> _showEditDialog(BuildContext context, WidgetRef ref, Map<String, dynamic>? goal) async {
+    final isEdit = goal != null;
+    final titleCtrl = TextEditingController(text: goal?['title'] ?? '');
+    final descCtrl = TextEditingController(text: goal?['description'] ?? '');
+    final targetCtrl = TextEditingController(text: goal?['target_value']?.toString() ?? '');
+    final unitCtrl = TextEditingController(text: goal?['unit'] ?? '');
 
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('添加目标'),
+        title: Text(isEdit ? '编辑目标' : '添加目标'),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: '目标名称', border: OutlineInputBorder())),
               const SizedBox(height: 12),
-              TextField(controller: targetCtrl, decoration: const InputDecoration(labelText: '目标值 (可选)', border: OutlineInputBorder()), keyboardType: TextInputType.number),
+              TextField(controller: descCtrl, decoration: const InputDecoration(labelText: '描述', border: OutlineInputBorder()), maxLines: 2),
+              const SizedBox(height: 12),
+              TextField(controller: targetCtrl, decoration: const InputDecoration(labelText: '目标值', border: OutlineInputBorder()), keyboardType: TextInputType.number),
               const SizedBox(height: 12),
               TextField(controller: unitCtrl, decoration: const InputDecoration(labelText: '单位 (如: 公里/次/小时)', border: OutlineInputBorder())),
             ],
@@ -152,22 +186,32 @@ class GoalsPage extends ConsumerWidget {
             onPressed: () async {
               if (titleCtrl.text.isEmpty) return;
               try {
-                await ref.read(apiServiceProvider).createGoal({
+                final api = ref.read(apiServiceProvider);
+                final data = <String, dynamic>{
                   'title': titleCtrl.text,
+                  'description': descCtrl.text,
                   if (targetCtrl.text.isNotEmpty) 'target_value': double.parse(targetCtrl.text),
-                  if (unitCtrl.text.isNotEmpty) 'unit': unitCtrl.text,
-                });
+                  'unit': unitCtrl.text,
+                };
+                if (isEdit) {
+                  if (targetCtrl.text.isNotEmpty) {
+                    data['target_value'] = double.parse(targetCtrl.text);
+                  }
+                  await api.updateGoal(goal!['id'], data);
+                } else {
+                  await api.createGoal(data);
+                }
                 if (ctx.mounted) Navigator.pop(ctx);
                 ref.invalidate(_goalsProvider);
               } catch (_) {
                 if (ctx.mounted) {
                   ScaffoldMessenger.of(ctx).showSnackBar(
-                    const SnackBar(content: Text('添加失败，请检查网络连接')),
+                    const SnackBar(content: Text('操作失败，请检查输入')),
                   );
                 }
               }
             },
-            child: const Text('添加'),
+            child: Text(isEdit ? '保存' : '添加'),
           ),
         ],
       ),

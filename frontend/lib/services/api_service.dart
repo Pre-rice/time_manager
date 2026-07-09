@@ -126,6 +126,11 @@ class ApiService {
     return response.data;
   }
 
+  Future<Map<String, dynamic>> updateGoal(String id, Map<String, dynamic> data) async {
+    final response = await _dio.put('/api/v1/goals/$id', data: data);
+    return response.data;
+  }
+
   Future<Map<String, dynamic>> updateGoalProgress(String id, double currentValue) async {
     final response = await _dio.patch('/api/v1/goals/$id/progress', data: {
       'current_value': currentValue,
