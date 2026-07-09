@@ -106,11 +106,11 @@ async def suggest_time(
     if not config:
         raise ValueError("请先在设置中配置 AI")
 
-    today = datetime.now(timezone.utc).date()
+    now = datetime.now(timezone.utc)
     result = await db.execute(
         select(Event).where(
             Event.user_id == user_id,
-            Event.start_time >= today.isoformat(),
+            Event.start_time >= now,
         ).order_by(Event.start_time)
     )
     events = result.scalars().all()
@@ -166,13 +166,17 @@ async def generate_morning_message(db: AsyncSession, user_id: uuid.UUID) -> str:
     if not config:
         raise ValueError("请先在设置中配置 AI")
 
-    today_str = date.today().isoformat()
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = today_start.replace(hour=23, minute=59, second=59)
+    today_str = now.strftime("%Y-%m-%d")
 
+    # 使用 datetime 对象比较，避免 PostgreSQL 类型不匹配错误
     result = await db.execute(
         select(Event).where(
             Event.user_id == user_id,
-            Event.start_time >= today_str,
-            Event.start_time < f"{today_str}T23:59:59",
+            Event.start_time >= today_start,
+            Event.start_time <= today_end,
         ).order_by(Event.start_time)
     )
     events = result.scalars().all()
@@ -181,7 +185,7 @@ async def generate_morning_message(db: AsyncSession, user_id: uuid.UUID) -> str:
         select(Task).where(
             Task.user_id == user_id,
             Task.status != "done",
-            Task.deadline <= f"{today_str}T23:59:59",
+            Task.deadline <= today_end,
         )
     )
     tasks = result.scalars().all()

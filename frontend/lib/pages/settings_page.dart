@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:dio/dio.dart';
 import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
+import '../providers/week_start_provider.dart';
 
 class SettingsPage extends ConsumerStatefulWidget {
   const SettingsPage({super.key});
@@ -18,10 +20,20 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _showKey = false;
   bool _hasConfig = false;
 
+  // 复旦配置
+  final _studentIdController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _fudanLoading = false;
+  bool _fudanConnected = false;
+  String? _fudanStudentId;
+  String? _fudanLastSync;
+  bool _showPassword = false;
+
   @override
   void initState() {
     super.initState();
     _loadConfig();
+    _loadFudanStatus();
   }
 
   @override
@@ -29,7 +41,103 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _apiKeyController.dispose();
     _endpointController.dispose();
     _modelController.dispose();
+    _studentIdController.dispose();
+    _passwordController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadFudanStatus() async {
+    final api = ref.read(apiServiceProvider);
+    if (!api.hasToken) return;
+    final status = await api.getFudanStatus();
+    if (mounted) {
+      setState(() {
+        _fudanConnected = status['connected'] == true;
+        _fudanStudentId = status['student_id'] as String?;
+        _fudanLastSync = status['last_sync_at'] as String?;
+        if (_fudanConnected && _fudanStudentId != null) {
+          _studentIdController.text = _fudanStudentId!;
+        }
+      });
+    }
+  }
+
+  Future<void> _connectFudan() async {
+    if (_studentIdController.text.isEmpty || _passwordController.text.isEmpty) return;
+    setState(() => _fudanLoading = true);
+    try {
+      final api = ref.read(apiServiceProvider);
+      final result = await api.connectFudan(
+        _studentIdController.text,
+        _passwordController.text,
+      );
+      if (mounted) {
+        if (result['success'] == true) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('复旦教务系统连接成功')),
+          );
+          _passwordController.clear();
+          await _loadFudanStatus();
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(result['message'] ?? '连接失败')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        String errorMsg = '连接失败';
+        if (e is DioException) {
+          try {
+            final data = e.response?.data;
+            if (data is Map && data['detail'] != null) {
+              final detail = data['detail'];
+              if (detail is List && detail.isNotEmpty) {
+                errorMsg = detail[0]['msg'] ?? '连接失败';
+              } else if (detail is String) {
+                errorMsg = detail;
+              }
+            }
+            if (data is Map && data['message'] != null) {
+              errorMsg = data['message'];
+            }
+          } catch (_) {}
+        } else {
+          errorMsg = e.toString();
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(errorMsg)),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _fudanLoading = false);
+    }
+  }
+
+  Future<void> _disconnectFudan() async {
+    setState(() => _fudanLoading = true);
+    try {
+      final api = ref.read(apiServiceProvider);
+      await api.disconnectFudan();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已断开复旦连接')),
+        );
+        setState(() {
+          _fudanConnected = false;
+          _fudanStudentId = null;
+          _fudanLastSync = null;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('断开连接失败')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _fudanLoading = false);
+    }
   }
 
   Future<void> _loadConfig() async {
@@ -102,11 +210,41 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final weekStart = ref.watch(weekStartProvider);
     return Scaffold(
       appBar: AppBar(title: const Text('设置')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.calendar_view_week, color: theme.colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Text('每周起始日', style: theme.textTheme.titleMedium),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Text('周日', style: theme.textTheme.bodyMedium),
+                      Switch(
+                        value: weekStart.isMonday,
+                        onChanged: (_) => weekStart.toggle(),
+                      ),
+                      Text('周一', style: theme.textTheme.bodyMedium),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -169,6 +307,99 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           : const Text('保存配置'),
                     ),
                   ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.school, color: theme.colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Text('复旦教务连接', style: theme.textTheme.titleMedium),
+                      const Spacer(),
+                      if (_fudanConnected)
+                        Chip(
+                          avatar: const Icon(Icons.check_circle, size: 16, color: Colors.green),
+                          label: const Text('已连接'),
+                          visualDensity: VisualDensity.compact,
+                        )
+                      else
+                        Chip(
+                          avatar: const Icon(Icons.link_off, size: 16),
+                          label: const Text('未连接'),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (_fudanConnected) ...[
+                    if (_fudanStudentId != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text('学号：$_fudanStudentId', style: theme.textTheme.bodyMedium),
+                      ),
+                    if (_fudanLastSync != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 16),
+                        child: Text('上次同步：${_fudanLastSync!.substring(0, 16).replaceAll('T', ' ')}',
+                            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                      ),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: OutlinedButton.icon(
+                        icon: _fudanLoading
+                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.link_off),
+                        label: const Text('断开连接'),
+                        onPressed: _fudanLoading ? null : _disconnectFudan,
+                      ),
+                    ),
+                  ] else ...[
+                    TextFormField(
+                      controller: _studentIdController,
+                      decoration: const InputDecoration(
+                        labelText: '学号',
+                        hintText: '请输入复旦学号',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _passwordController,
+                      obscureText: !_showPassword,
+                      decoration: InputDecoration(
+                        labelText: 'UIS 密码',
+                        border: const OutlineInputBorder(),
+                        suffixIcon: IconButton(
+                          icon: Icon(_showPassword ? Icons.visibility_off : Icons.visibility),
+                          onPressed: () => setState(() => _showPassword = !_showPassword),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text('密码将被加密存储，仅用于自动同步课表/考试/作业',
+                        style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: FilledButton.icon(
+                        icon: _fudanLoading
+                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.link),
+                        label: const Text('连接复旦教务'),
+                        onPressed: _fudanLoading ? null : _connectFudan,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),

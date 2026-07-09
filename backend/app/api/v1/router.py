@@ -9,9 +9,11 @@ from app.api.v1.goals import router as goals_router
 from app.api.v1.special_dates import router as special_dates_router
 from app.api.v1.ai_config import router as ai_config_router
 from app.api.v1.ai import router as ai_router
+from app.api.v1.external import router as external_router
 
 router = APIRouter(prefix="/api/v1")
 router.include_router(auth_router)
+router.include_router(external_router)
 router.include_router(events_router)
 router.include_router(tasks_router)
 router.include_router(goals_router)

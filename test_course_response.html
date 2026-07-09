@@ -1,0 +1,32 @@
+<html>
+<head>
+    <meta name="viewport" http-equiv="X-UA-Compatible" content="IE=11,chrome=1">
+    <title>logon</title>
+    <script type="application/javascript" >
+        /*<![CDATA[*/
+        function doSubmit(){
+            var actionType = "GET";
+            var locationValue = "https://fdjwgl.fudan.edu.cn/student/sso/login?refer=https://fdjwgl.fudan.edu.cn/student/for-std/course-table&amp;ticket=ST-12368866-z4dpGcPjORokV-6l4t-5P2d6Vscbam2";
+            locationValue = escape2Html(locationValue);
+            if(actionType == 'POST'){
+                var logon = document.getElementById("logon");
+                logon.submit();
+            }else{
+                location = locationValue;
+            }
+        }
+        function escape2Html(str) {
+            var arrEntities={'lt':'<','gt':'>','nbsp':' ','amp':'&','quot':'"'};
+            return str.replace(/&(lt|gt|nbsp|amp|quot);/ig,function(all,t){return arrEntities[t];});
+        }
+        /*]]>*/
+    </script>
+</head>
+<body onload="doSubmit()">
+<form id ="logon" method = "GET" action="https://fdjwgl.fudan.edu.cn/student/sso/login?refer=https://fdjwgl.fudan.edu.cn/student/for-std/course-table" target="_self">
+    <tr>
+        <input type="hidden" id="ticket" name="ticket" value="ST-12368866-z4dpGcPjORokV-6l4t-5P2d6Vscbam2"></input>
+    </tr>
+</form>
+</body>
+</html>

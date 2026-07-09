@@ -183,4 +183,32 @@ class ApiService {
     final response = await _dio.get('/api/v1/ai/morning-message');
     return response.data;
   }
+
+  // ==================== 复旦外部数据 ====================
+
+  Future<Map<String, dynamic>> connectFudan(String studentId, String password) async {
+    final response = await _dio.post('/api/v1/external/fudan/connect', data: {
+      'student_id': studentId,
+      'password': password,
+    });
+    return response.data;
+  }
+
+  Future<Map<String, dynamic>> getFudanStatus() async {
+    try {
+      final response = await _dio.get('/api/v1/external/fudan/status');
+      return response.data as Map<String, dynamic>;
+    } catch (_) {
+      return {'connected': false};
+    }
+  }
+
+  Future<Map<String, dynamic>> syncFudan() async {
+    final response = await _dio.post('/api/v1/external/fudan/sync');
+    return response.data;
+  }
+
+  Future<void> disconnectFudan() async {
+    await _dio.delete('/api/v1/external/fudan/disconnect');
+  }
 }

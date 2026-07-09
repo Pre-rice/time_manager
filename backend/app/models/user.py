@@ -21,3 +21,4 @@ class User(BaseModel):
     goals = relationship("Goal", back_populates="user", cascade="all, delete-orphan")
     ai_configs = relationship("AIConfig", back_populates="user", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
+    fudan_credentials = relationship("FudanCredential", back_populates="user", cascade="all, delete-orphan")

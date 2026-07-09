@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
+import 'events_page.dart';
 
 class AiAssistantPage extends ConsumerStatefulWidget {
   const AiAssistantPage({super.key});
@@ -27,7 +28,6 @@ class _AiAssistantPageState extends ConsumerState<AiAssistantPage> {
     try {
       final api = ref.read(apiServiceProvider);
       final items = await api.extractFromText(_textController.text.trim());
-      // 叠加：追加到现有结果
       setState(() {
         for (final item in items) {
           if (item is Map) {
@@ -78,57 +78,31 @@ class _AiAssistantPageState extends ConsumerState<AiAssistantPage> {
   Future<void> _editItem(int index) async {
     final item = _results[index];
     final isEvent = item['type'] == 'event';
-    final titleCtrl = TextEditingController(text: item['title'] ?? '');
-    final descCtrl = TextEditingController(text: item['description'] ?? '');
-    final startCtrl = TextEditingController(text: item['start_time'] ?? '');
-    final endCtrl = TextEditingController(text: item['end_time'] ?? '');
-    final deadlineCtrl = TextEditingController(text: item['deadline'] ?? '');
-    int priority = (item['priority'] as int?) ?? 0;
 
-    final result = await showDialog<Map<String, dynamic>>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setState) => AlertDialog(
-          title: Text('编辑${isEvent ? "日程" : "待办"}'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: '标题', border: OutlineInputBorder())),
-                const SizedBox(height: 8),
-                TextField(controller: descCtrl, decoration: const InputDecoration(labelText: '描述', border: OutlineInputBorder()), maxLines: 2),
-                const SizedBox(height: 8),
-                if (isEvent) ...[
-                  TextField(controller: startCtrl, decoration: const InputDecoration(labelText: '开始时间 (ISO)', border: OutlineInputBorder()), style: const TextStyle(fontSize: 13)),
-                  const SizedBox(height: 8),
-                  TextField(controller: endCtrl, decoration: const InputDecoration(labelText: '结束时间 (ISO)', border: OutlineInputBorder()), style: const TextStyle(fontSize: 13)),
-                ] else ...[
-                  TextField(controller: deadlineCtrl, decoration: const InputDecoration(labelText: '截止时间 (ISO)', border: OutlineInputBorder()), style: const TextStyle(fontSize: 13)),
-                ],
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, {
-                'title': titleCtrl.text,
-                'description': descCtrl.text,
-                if (isEvent) 'start_time': startCtrl.text,
-                if (isEvent) 'end_time': endCtrl.text,
-                if (!isEvent) 'deadline': deadlineCtrl.text,
-                if (!isEvent) 'priority': priority,
-                'type': item['type'],
-              }),
-              child: const Text('保存'),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    if (result != null) {
-      setState(() => _results[index] = result);
+    // 复用统一的编辑弹窗
+    if (isEvent) {
+      // 构建一个伪 event 对象（带 start_time/end_time）
+      final result = await showEventEditDialog(context, {
+        'title': item['title'] ?? '',
+        'description': item['description'] ?? '',
+        'start_time': item['start_time'] ?? '',
+        'end_time': item['end_time'] ?? '',
+      });
+      if (result != null) {
+        result['type'] = 'event';
+        setState(() => _results[index] = result);
+      }
+    } else {
+      final result = await showTaskEditDialog(context, {
+        'title': item['title'] ?? '',
+        'description': item['description'] ?? '',
+        'deadline': item['deadline'] ?? '',
+        'priority': item['priority'] ?? 1,
+      });
+      if (result != null) {
+        result['type'] = 'task';
+        setState(() => _results[index] = result);
+      }
     }
   }
 

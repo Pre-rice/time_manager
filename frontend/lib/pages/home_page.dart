@@ -75,6 +75,46 @@ class HomePage extends ConsumerStatefulWidget {
 class _HomePageState extends ConsumerState<HomePage> {
   String? _morningMessage;
   bool _loadingMessage = false;
+  bool _syncingFudan = false;
+  String? _fudanSyncResult;
+
+  @override
+  void initState() {
+    super.initState();
+    _autoSyncFudan();
+  }
+
+  Future<void> _autoSyncFudan() async {
+    final api = ref.read(apiServiceProvider);
+    if (!api.hasToken) return;
+
+    // 检查复旦连接状态
+    final status = await api.getFudanStatus();
+    if (status['connected'] != true) return;
+
+    // 有连接则自动同步
+    setState(() => _syncingFudan = true);
+    try {
+      final result = await api.syncFudan();
+      if (mounted) {
+        if (result['success'] == true) {
+          final data = result['data'] as Map?;
+          if (data != null) {
+            final created = data['events_created'] ?? 0;
+            final tasks = data['tasks_created'] ?? 0;
+            if ((created as int) > 0 || (tasks as int) > 0) {
+              setState(() => _fudanSyncResult = '已同步 $created 个日程、$tasks 个待办');
+              ref.invalidate(_homeDataProvider);
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // 静默失败，不影响首页加载
+    } finally {
+      if (mounted) setState(() => _syncingFudan = false);
+    }
+  }
 
   Future<void> _generateMorningMessage() async {
     setState(() {

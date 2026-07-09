@@ -7,6 +7,7 @@ from app.models.ai_config import AIConfig
 from app.models.ai_template import AITemplate
 from app.models.notification import Notification
 from app.models.special_date import SpecialDate
+from app.models.fudan_credential import FudanCredential
 
 __all__ = [
     "BaseModel",
@@ -21,4 +22,5 @@ __all__ = [
     "AITemplate",
     "Notification",
     "SpecialDate",
+    "FudanCredential",
 ]
