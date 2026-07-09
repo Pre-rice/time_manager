@@ -401,7 +401,7 @@ async def _get_client(credential: FudanCredential) -> httpx.AsyncClient | None:
     except Exception:
         return None
 
-    client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+    client = httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True)
 
     for domain, paths in cookies.items():
         for path, cookie_dict in paths.items():
@@ -655,10 +655,17 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
     import re, json
     
     # Step 1: 先做 SSO 重连
-    await _ensure_sso_session(client, COURSE_TABLE_URL)
+    sso_ok = await _ensure_sso_session(client, COURSE_TABLE_URL)
+    logger.info(f"SSO result: {sso_ok}")
     
     # Step 2: 访问课表页面一次，提取 semesterId、studentId、personId 和学期名称
-    resp = await client.get(COURSE_TABLE_URL, follow_redirects=True)
+    try:
+        resp = await client.get(COURSE_TABLE_URL, follow_redirects=True)
+        logger.info(f"Course page response: {resp.status_code}, size={len(resp.text)}, url={resp.url}")
+    except Exception as e:
+        logger.warning(f"Failed to load course page: {type(e).__name__}: {e}")
+        # 如果课表页面都无法访问，直接返回空结果
+        return [], [], [], []
     logger.info(f"Course page size: {len(resp.text)}, logon={'logon' in resp.text[:300].lower()}")
     
     # 从 select option 中提取学期ID（格式 <option value="527">2026-2027学年1学期</option>）
@@ -746,11 +753,26 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
             draw_resp = await client.post(draw_url, json=body)
             logger.info(f"Draw API response: status={draw_resp.status_code}, content_len={len(draw_resp.text)}, preview={draw_resp.text[:500]}")
             
+            # 即使非200也记录原始body（可能返回错误信息）
+            if draw_resp.status_code != 200:
+                logger.warning(f"Draw API non-200: body={draw_resp.text[:2000]}")
+            
             if draw_resp.status_code == 200 and len(draw_resp.text) > 20:
+                raw_text = draw_resp.text
+                logger.info(f"Draw API raw text (full): {raw_text[:5000]}")
                 draw_data = draw_resp.json()
                 logger.info(f"Draw API returned type: {type(draw_data).__name__}")
                 if isinstance(draw_data, dict):
                     logger.info(f"Draw API keys: {list(draw_data.keys())}")
+                elif isinstance(draw_data, list):
+                    logger.info(f"Draw API list length: {len(draw_data)}")
+                    if draw_data:
+                        import json as _json_debug
+                        try:
+                            full_json_str = _json_debug.dumps(draw_data[:3], ensure_ascii=False, default=str)[:5000]
+                        except Exception:
+                            full_json_str = str(draw_data[:3])[:5000]
+                        logger.info(f"Draw API first 3 items: {full_json_str}")
                 
                 # 构建 lesson_map 供解析器使用
                 lesson_map = {}
@@ -765,6 +787,9 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
                 
                 schedules = parse_schedule_from_draw_data(draw_data, lesson_map)
                 logger.info(f"Parsed {len(schedules)} schedule entries from draw API")
+                # 将 semester_name 注入到每个 schedule 中，以供 _upsert_course_event 使用
+                for s in schedules:
+                    s["semester_name"] = semester_name
         except Exception as e:
             logger.warning(f"Draw-table-data API failed: {type(e).__name__}: {e}")
     
@@ -862,6 +887,7 @@ async def sync_fudan_data(db: AsyncSession, user_id: uuid.UUID) -> dict:
         await client.aclose()
 
     credential.last_sync_at = datetime.now(timezone.utc)
+    logger.info(f"Sync completed: {result['events_created']} events, {result['tasks_created']} tasks")
     await db.commit()
 
     return {
@@ -930,9 +956,10 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
     if weekday and weeks:
         # 有排课信息 - 创建带时间的事件
         try:
-            # 获取学期开始日期
-            semester_start = "2026-09-01"  # 默认，会被覆盖
-            # 使用 compute_semester_start 如果需要可从外部传入
+            # 获取学期开始日期（优先从 schedule 携带的 semester_name 计算）
+            semester_name = course.get('semester_name', '')
+            computed = compute_semester_start(None, semester_name)
+            semester_start = computed if computed else "2026-09-01"
             first_week = weeks[0]
             
             # 计算起始日期

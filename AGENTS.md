@@ -4,16 +4,12 @@
 
 ## 元原则
 
-1. **先记录，再改正** — 用户指出问题后，先更新文档（AGENTS.md 或 README.md），再去改代码
-2. **自己跑完所有流程再找用户** — 后端测试 → 构建 → 启动服务器让用户查看，全部通过后才报告
-3. **新对话先读本文档 + README.md** — 每次开启新对话时，第一条消息必须 read_file 这两个文件
-4. **部署是最后一步** — attempt_completion 之前必须启动 HTTP 服务器（`python -m http.server 8080`）并告知用户可访问
-5. **部署端口 8080** — 如有进程占用先 `taskkill /F /IM python.exe`
-6. **遇到问题要说** — 连不上、构建失败等要告知用户
-7. **文档持续迭代** — 每次新经验都要更新到本文档
-8. **思考过程用中文**
-9. **错误提示必须精准** — 不能笼统说"注册失败"，要指出具体原因
-10. **持续同步 Git** — 完成阶段性工作后立即提交
+1. **文档持续迭代** — 用户指出问题（特别是反复指出）或自己总结出经验（特别是反复犯错）后，必须更新本文档，持续迭代。目标是让 AGENT 能够自我进化，避免再次犯错，且一切皆可修改（包括元原则），改变是为了进化
+2. **严格遵守流程** — 先详细分析，给出切实可行的细化方案，再进行执行。完成任务后必须先进行后端测试，确保功能无误。最后必须启动 HTTP 服务器（`python -m http.server 8080`）并告知用户，让用户检查前端。且完成任务后要详细告知用户此次更新的细节
+3. **准备开始新对话前必须更新文档** — 每次用户要求开启新对话前，必须同步本文档和 README.md 的信息到最新状态，在开发进度及技术细节模块中讲清楚此次添加内容的技术细节，并详细说明接下来要执行任务，确保新对话读取后能继续稳步推进
+4. **遇到问题要说** — 遇到一切难以解决的问题要告知用户，不能自行跳过
+5. **交流必须用中文** — 对话、思考过程，以及面向客户的文字，必须使用中文
+6. **持续同步 Git** — 完成阶段性工作后立即提交
 
 ## 项目架构
 
@@ -51,7 +47,7 @@ time_manager/
 │       ├── schemas/       # Pydantic 请求/响应
 │       ├── services/      # 业务逻辑
 │       │   ├── fudan_service.py  # 复旦教务抓取
-│       │   ├── fudan_parser.py   # 复旦数据解析（已弃用）
+│       │   ├── fudan_parser.py   # 复旦数据解析
 │       │   └── ai_service.py     # AI 功能
 │       └── api/
 │           ├── deps.py    # JWT 依赖注入
@@ -176,7 +172,7 @@ authserver/login (获取 lck + entityId)
 |------|------|-----|
 | **课程列表+考试** | JSON API | `GET /student/for-std/course-table/getLesson?semesterId={}&studentId={}` |
 | **考试安排（含期中）** | HTML 解析 | `GET /student/for-std/exam-arrange/` |
-| **课表排课（每周时间）** | 待实现 | 需要从 `all-courses` 或 `draw-table-data` API 获取 |
+| **课表排课（每周时间）** | 待实现 | `draw-table-data` API 返回 HTML，需参考 DanXi 源码 |
 
 ### 开发调试凭据
 
@@ -187,9 +183,14 @@ authserver/login (获取 lck + entityId)
 
 ### 已知问题
 
-1. **排课数据未导入** — 课表每周上课时间、节次、地点仍需要从 `all-courses` API 或 `draw-table-data` API 获取
-2. **Windows GBK 编码** — cmd 终端输出 Unicode 时报错，调试困难
-3. **Cookie 会过期** — SSO 每次 sync 时需要自动跟随 ticket 重连
+1. **排课数据未导入** — `draw-table-data` API 返回了 HTML（可能是 403 或重定向），说明认证或请求参数有问题。需要参考 DanXi（复旦官方开源 App）的源码来找到正确的课表 API 端点
+2. **`_get_client()` 缺少 `verify=False`** — 已修复（2026-07-09）
+3. **`semester_start` 硬编码** — 已修复，改用 `compute_semester_start()` 根据学期名称自动计算（2026-07-09）
+4. **Windows GBK 编码** — cmd 终端输出 Unicode 时报错，调试困难
+5. **Cookie 会过期** — SSO 每次 sync 时需要自动跟随 ticket 重连
+6. **Docker 容器内 Python stdout 缓冲** — `docker exec` 运行 Python 时输出被缓冲吞掉，调试困难。解决：写入文件再用 `cat` 读取
+7. **`last_sync_at` 时区** — 后端存 UTC，前端直接显示 UTC 而非北京时间（需修复）
+8. **前端编辑弹窗无 RRULE 支持** — 编辑弹窗没展示重复规则（需修复）
 
 ## 前端 Flutter 注意事项
 
@@ -201,7 +202,7 @@ authserver/login (获取 lck + entityId)
 - **AI 提取弹窗复用**：`showEventEditDialog`/`showTaskEditDialog` 是顶层函数
 - **错误提示**：必须从后端提取具体信息，不能笼统
 
-## 开发进度
+## 开发进度及技术细节
 
 ### Phase 1 ✅ 骨架搭建
 - FastAPI 项目结构，10 张表，JWT 认证，Docker Compose
@@ -227,10 +228,23 @@ authserver/login (获取 lck + entityId)
 - [x] 考试 HTML 解析（期中+期末）
 - [x] API 路由（connect/sync/status/disconnect）
 - [x] 增量 upsert 导入
-- [x] 前端设置页配置
-- [x] sync 导入 37 条日程 ✅
-- [ ] 课表排课数据导入（每周上课时间地点）
+- [x] sync 导入 37 条考试日程 ✅
+- [x] `_get_client()` 修复 SSL 验证 ✅
+- [x] 学期开始日期硬编码修复 ✅
+- [ ] **课表排课数据导入** — `draw-table-data` 返回 HTML，需参考 DanXi 源码找到正确 API
+- [ ] `last_sync_at` 前端显示 UTC+8 时区修复
+- [ ] 前端 RRULE 展示和编辑
 - [ ] eLearning 作业抓取
+
+### 关键技术障碍（2026-07-09 记录）
+
+**`draw-table-data` API 返回 HTML 而非 JSON**：
+- 日志显示 `Draw API non-200: body=<!DOCTYPE html>...`，说明该 API 端点要么需要不同的认证方式，要么已经废弃
+- Docker exec 的 Python 输出缓冲问题导致无法直接在容器内调试
+- 下一步需要参考 [DanXi](https://github.com/DanXi-Dev/DanXi)（复旦官方开源项目）的源码中找到正确的课表数据 API
+  - DanXi 使用 Flutter 和 Dart 开发
+  - 重点关注 `lib/api/` 和 `lib/models/` 中的课表相关代码
+  - 查看 DanXi 是如何获取课程排课（每周时间、地点）的
 
 ### Phase 6 🔜 实时与提醒
 ### Phase 7 🔜 界面美化
