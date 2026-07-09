@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,16 +27,11 @@ def build_litellm_params(config: AIConfig) -> dict:
     model = config.model_name
     api_base = config.api_endpoint
 
-    # LiteLLM 需要 provider 前缀，如 deepseek/deepseek-chat
-    # 如果模型名不包含 /，根据 api_endpoint 推断 provider
     if "/" not in model:
         if api_base and "deepseek" in api_base:
             model = f"deepseek/{model}"
         elif api_base and "azure" in api_base:
             model = f"azure/{model}"
-        # 默认 openai/ 前缀
-        else:
-            model = model  # openai 不需要前缀
 
     params = {
         "model": model,
@@ -48,9 +43,7 @@ def build_litellm_params(config: AIConfig) -> dict:
     return params
 
 
-async def call_llm(
-    config: AIConfig, system_prompt: str, user_prompt: str
-) -> str:
+async def call_llm(config: AIConfig, system_prompt: str, user_prompt: str) -> str:
     """调用 LLM（同步执行，适用短期请求）"""
     from litellm import completion
 
@@ -71,20 +64,27 @@ async def extract_from_text(
     if not config:
         raise ValueError("请先在设置中配置 AI")
 
-    system_prompt = """你是一个任务提取助手。从用户的自然语言描述中提取日程和待办事项。
-返回 JSON 数组，每个元素包含：
-- type: "event" 或 "task"
-- title: 标题
-- start_time: 开始时间 (ISO 格式，如 "2026-07-10T14:00:00")
-- end_time: 结束时间 (可选)
-- deadline: 截止时间 (可选，仅 task 类型)
-- priority: 优先级 0-3 (可选)
-- description: 描述 (可选)
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    day_after = (now + timedelta(days=2)).strftime("%Y-%m-%d")
 
-只返回 JSON 数组，不要其他文字。"""
+    system_prompt = (
+        f"今天是 {today}（UTC 时间）。你是一个任务提取助手。\n\n"
+        "从用户的自然语言描述中提取日程和待办事项。\n"
+        "返回 JSON 数组，每个元素包含：\n"
+        '- type: "event" 或 "task"\n'
+        "- title: 标题\n"
+        f'- start_time: 开始时间 (ISO 格式，如 "{today}T14:00:00")\n'
+        "- end_time: 结束时间 (可选)\n"
+        "- deadline: 截止时间 (可选，仅 task 类型)\n"
+        "- priority: 优先级 0-3 (可选)\n"
+        "- description: 描述 (可选)\n\n"
+        f"注意：用户说\"今天\"就是 {today}，\"明天\"就是 {tomorrow}，\"后天\"就是 {day_after}。\n\n"
+        "只返回 JSON 数组，不要其他文字。"
+    )
 
     content = await call_llm(config, system_prompt, text)
-    # 尝试解析 JSON
     content = content.strip()
     if content.startswith("```"):
         content = content.split("\n", 1)[-1]
@@ -106,7 +106,6 @@ async def suggest_time(
     if not config:
         raise ValueError("请先在设置中配置 AI")
 
-    # 获取用户未来日程
     today = datetime.now(timezone.utc).date()
     result = await db.execute(
         select(Event).where(
@@ -116,7 +115,6 @@ async def suggest_time(
     )
     events = result.scalars().all()
 
-    # 获取待办
     result = await db.execute(
         select(Task).where(
             Task.user_id == user_id,
@@ -162,9 +160,7 @@ async def suggest_time(
     return []
 
 
-async def generate_morning_message(
-    db: AsyncSession, user_id: uuid.UUID
-) -> str:
+async def generate_morning_message(db: AsyncSession, user_id: uuid.UUID) -> str:
     """生成早安消息"""
     config = await get_user_ai_config(db, user_id)
     if not config:
@@ -172,7 +168,6 @@ async def generate_morning_message(
 
     today_str = date.today().isoformat()
 
-    # 获取今天日程
     result = await db.execute(
         select(Event).where(
             Event.user_id == user_id,
@@ -182,7 +177,6 @@ async def generate_morning_message(
     )
     events = result.scalars().all()
 
-    # 获取过期/今天到期的待办
     result = await db.execute(
         select(Task).where(
             Task.user_id == user_id,

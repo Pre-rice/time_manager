@@ -91,3 +91,13 @@ Pydantic 验证失败返回 422，格式为数组：
 - 所有面向用户的错误提示必须精准描述原因
 - Python FastAPI 的 EmailStr 需要安装 `email-validator` 包
 - **Git 要持续提交** — 完成一个阶段就提交一次，不要堆积
+- **Dart `const` 静态常量不能用 `()` 调用** — `static const empty` 定义后使用 `_HomeData.empty` 而不是 `_HomeData.empty()`
+- **Dart `List<dynamic>` 类型处理** — `api.getEvents()` 返回 `List<dynamic>`，不能直接调用 `.where()` 或 `.cast<T>()`，需要手动用 `for` 循环遍历并 `Map<String, dynamic>.from(e)` 转换
+- **Flutter `StatefulBuilder` 用于 AlertDialog 内部状态更新** — 在 `showDialog` 中想更新局部状态（如日期选择），需要用 `StatefulBuilder` 包裹 builder
+- **错误提示要从后端提取具体信息** — 422 的 `detail` 是数组，409 的 `detail` 是字符串，要区分处理
+- **AI 文本提取的日期偏移问题** — LLM 默认处理时可能用 UTC 时间或"今天"的语义取决于上下文，需要在前端校准日期
+- **AI 提取结果需要可编辑** — 提取出的日程/待办需要在添加到系统前允许用户修改
+- **多次提取结果要叠加** — 新提取的内容不能覆盖上次结果，要追加到已有列表
+- **星期的起始日配置** — 需要全局设置"周一/周日作为每周第一天"，影响日历视图和日期选择器
+- **删除 `taskkill /F /IM python.exe` 再重启服务器的正确做法** — 先单独执行 taskkill，确认杀死后再单独启动，不要链式执行
+- **需要 `table_calendar` 包来实现月视图**
