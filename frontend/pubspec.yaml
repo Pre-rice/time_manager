@@ -35,6 +35,7 @@ dependencies:
   # 本地化
   flutter_localizations:
     sdk: flutter
+  rrule: ^0.2.18
 
 dev_dependencies:
   flutter_test:

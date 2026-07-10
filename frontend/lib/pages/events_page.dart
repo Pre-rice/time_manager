@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
+import 'package:rrule/rrule.dart';
 import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 import '../providers/week_start_provider.dart';
@@ -36,6 +37,11 @@ Future<Map<String, dynamic>?> showEventEditDialog(
     text: (event?['preparation_minutes'] as int?)?.toString() ?? '',
   );
 
+  // RRULE 状态
+  String repeatFreq = 'none'; // none, daily, weekly, monthly, yearly
+  int repeatInterval = 1;
+  int repeatCount = 0;
+
   if (isEdit) {
     final startStr = event['start_time'] as String?;
     final endStr = event['end_time'] as String?;
@@ -50,6 +56,18 @@ Future<Map<String, dynamic>?> showEventEditDialog(
         endDate = DateTime.parse(endStr.substring(0, 16));
         endTime = TimeOfDay.fromDateTime(endDate);
       } catch (_) {}
+    }
+
+    final existingRrule = event['rrule'] as String?;
+    if (existingRrule != null && existingRrule.isNotEmpty) {
+      if (existingRrule.contains('FREQ=DAILY')) repeatFreq = 'daily';
+      else if (existingRrule.contains('FREQ=WEEKLY')) repeatFreq = 'weekly';
+      else if (existingRrule.contains('FREQ=MONTHLY')) repeatFreq = 'monthly';
+      else if (existingRrule.contains('FREQ=YEARLY')) repeatFreq = 'yearly';
+      final intervalMatch = RegExp(r'INTERVAL=(\d+)').firstMatch(existingRrule);
+      if (intervalMatch != null) repeatInterval = int.parse(intervalMatch.group(1)!);
+      final countMatch = RegExp(r'COUNT=(\d+)').firstMatch(existingRrule);
+      if (countMatch != null) repeatCount = int.parse(countMatch.group(1)!);
     }
   }
 
@@ -163,6 +181,61 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   onChanged: (v) => setState(() => isAllDay = v),
                 ),
                 const SizedBox(height: 8),
+                // 重复设置
+                DropdownButtonFormField<String>(
+                  value: repeatFreq,
+                  decoration: const InputDecoration(labelText: '重复', border: OutlineInputBorder()),
+                  items: const [
+                    DropdownMenuItem(value: 'none', child: Text('不重复')),
+                    DropdownMenuItem(value: 'daily', child: Text('每天')),
+                    DropdownMenuItem(value: 'weekly', child: Text('每周')),
+                    DropdownMenuItem(value: 'monthly', child: Text('每月')),
+                    DropdownMenuItem(value: 'yearly', child: Text('每年')),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) setState(() => repeatFreq = v);
+                  },
+                ),
+                if (repeatFreq != 'none') ...[
+                  const SizedBox(height: 8),
+                  // 重复间隔
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          decoration: const InputDecoration(
+                            labelText: '间隔',
+                            hintText: '1',
+                            border: OutlineInputBorder(),
+                          ),
+                          keyboardType: TextInputType.number,
+                          controller: TextEditingController(text: repeatInterval.toString()),
+                          onChanged: (v) {
+                            final parsed = int.tryParse(v);
+                            if (parsed != null && parsed > 0) repeatInterval = parsed;
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          decoration: const InputDecoration(
+                            labelText: '重复次数（0=无限）',
+                            hintText: '0',
+                            border: OutlineInputBorder(),
+                          ),
+                          keyboardType: TextInputType.number,
+                          controller: TextEditingController(text: repeatCount.toString()),
+                          onChanged: (v) {
+                            final parsed = int.tryParse(v);
+                            if (parsed != null) repeatCount = parsed;
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 8),
                 // 准备日程标记
                 SwitchListTile(
                   title: const Text('这是一段准备时间'),
@@ -204,6 +277,18 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   final finalEnd = DateTime(endDate.year, endDate.month, endDate.day, endTime.hour, endTime.minute);
                   data['start_time'] = finalStart.toIso8601String();
                   data['end_time'] = finalEnd.toIso8601String();
+                }
+                // RRULE
+                if (repeatFreq != 'none') {
+                  final freqMap = {
+                    'daily': 'DAILY',
+                    'weekly': 'WEEKLY',
+                    'monthly': 'MONTHLY',
+                    'yearly': 'YEARLY',
+                  };
+                  String rrule = 'FREQ=${freqMap[repeatFreq]};INTERVAL=$repeatInterval';
+                  if (repeatCount > 0) rrule += ';COUNT=$repeatCount';
+                  data['rrule'] = rrule;
                 }
                 final prepMin = int.tryParse(prepMinutesCtrl.text);
                 if (prepMin != null && prepMin > 0) {
@@ -385,26 +470,89 @@ class _EventsPageState extends ConsumerState<EventsPage> {
   DateTime _selectedDay = DateTime.now();
   DateTime _focusedDay = DateTime.now();
 
-  Map<DateTime, List<Map<String, dynamic>>> _groupEvents(List<dynamic> events) {
-    final map = <DateTime, List<Map<String, dynamic>>>{};
-    for (final e in events) {
-      final event = Map<String, dynamic>.from(e as Map);
-      final startStr = event['start_time'] as String?;
-      if (startStr == null) continue;
-      try {
-        final date = DateTime.parse(startStr.substring(0, 10));
-        final key = DateTime(date.year, date.month, date.day);
-        map.putIfAbsent(key, () => []);
-        map[key]!.add(event);
-      } catch (_) {}
-    }
-    return map;
-  }
-
-  List<Map<String, dynamic>> _getEventsForDay(DateTime day, List<dynamic> events) {
+  /// 根据 RRULE 展开重复事件
+  List<Map<String, dynamic>> _expandRecurringEvents(List<dynamic> events, DateTime monthStart, DateTime monthEnd) {
     final result = <Map<String, dynamic>>[];
     for (final e in events) {
       final event = Map<String, dynamic>.from(e as Map);
+      final rruleStr = event['rrule'] as String?;
+      final startStr = event['start_time'] as String?;
+      if (startStr == null) continue;
+
+      DateTime? startTimeParsed;
+      try {
+        startTimeParsed = DateTime.parse(startStr);
+      } catch (_) {
+        continue;
+      }
+      if (startTimeParsed == null) continue;
+
+      if (rruleStr == null || rruleStr.isEmpty) {
+        // 非重复事件
+        result.add(event);
+        continue;
+      }
+
+      // 尝试用 rrule 包解析
+      try {
+        final rrule = RecurrenceRule(
+          frequency: _parseFreq(rruleStr),
+          interval: _parseInterval(rruleStr),
+          count: _parseCount(rruleStr),
+        );
+        final occurrences = rrule.getAllInstances(
+          start: startTimeParsed,
+          after: monthStart.subtract(const Duration(days: 1)),
+          before: monthEnd.add(const Duration(days: 1)),
+          includeAfter: true,
+          includeBefore: true,
+        );
+        for (final occ in occurrences) {
+          final ev = Map<String, dynamic>.from(event);
+          final duration = event['end_time'] != null
+              ? DateTime.parse(event['end_time']).difference(startTimeParsed)
+              : const Duration(hours: 1);
+          ev['start_time'] = occ.toIso8601String();
+          ev['end_time'] = occ.add(duration).toIso8601String();
+          result.add(ev);
+        }
+      } catch (_) {
+        // rrule 解析失败则显示原始事件
+        result.add(event);
+      }
+    }
+    return result;
+  }
+
+  Frequency _parseFreq(String rrule) {
+    if (rrule.contains('FREQ=DAILY')) return Frequency.daily;
+    if (rrule.contains('FREQ=WEEKLY')) return Frequency.weekly;
+    if (rrule.contains('FREQ=MONTHLY')) return Frequency.monthly;
+    if (rrule.contains('FREQ=YEARLY')) return Frequency.yearly;
+    return Frequency.daily;
+  }
+
+  int _parseInterval(String rrule) {
+    final match = RegExp(r'INTERVAL=(\d+)').firstMatch(rrule);
+    if (match != null) return int.parse(match.group(1)!);
+    return 1;
+  }
+
+  int? _parseCount(String rrule) {
+    final match = RegExp(r'COUNT=(\d+)').firstMatch(rrule);
+    if (match != null) return int.parse(match.group(1)!);
+    return null;
+  }
+
+  List<Map<String, dynamic>> _getEventsForDay(DateTime day, List<dynamic> events) {
+    // 计算当月范围用于 RRULE 展开
+    final monthStart = DateTime(day.year, day.month, 1);
+    final monthEnd = DateTime(day.year, day.month + 1, 0, 23, 59, 59);
+
+    final expanded = _expandRecurringEvents(events, monthStart, monthEnd);
+
+    final result = <Map<String, dynamic>>[];
+    for (final event in expanded) {
       final startStr = event['start_time'] as String?;
       if (startStr == null) continue;
       try {
@@ -459,6 +607,7 @@ class _EventsPageState extends ConsumerState<EventsPage> {
           if (result['end_time'] != null) 'end_time': result['end_time'],
           'is_preparation': result['is_preparation'],
           if (result['preparation_minutes'] != null) 'preparation_minutes': result['preparation_minutes'],
+          if (result['rrule'] != null) 'rrule': result['rrule'],
         });
       } else {
         await api.createEvent({
@@ -470,6 +619,7 @@ class _EventsPageState extends ConsumerState<EventsPage> {
           if (result['end_time'] != null) 'end_time': result['end_time'],
           'is_preparation': result['is_preparation'],
           if (result['preparation_minutes'] != null) 'preparation_minutes': result['preparation_minutes'],
+          if (result['rrule'] != null) 'rrule': result['rrule'],
         });
       }
       ref.invalidate(_eventsProvider);
@@ -547,7 +697,6 @@ class _EventsPageState extends ConsumerState<EventsPage> {
         error: (_, __) => _emptyView(),
         data: (events) {
           final weekDay = weekStart.isMonday ? StartingDayOfWeek.monday : StartingDayOfWeek.sunday;
-          final groupedEvents = _groupEvents(events);
           final dayEvents = _getEventsForDay(_selectedDay, events);
 
           return Column(
@@ -570,7 +719,7 @@ class _EventsPageState extends ConsumerState<EventsPage> {
                     setState(() => _focusedDay = focusedDay);
                   },
                   eventLoader: (day) {
-                    return groupedEvents[DateTime(day.year, day.month, day.day)] ?? [];
+                    return dayEvents;
                   },
                   headerStyle: const HeaderStyle(formatButtonVisible: false, titleCentered: true),
                   calendarStyle: CalendarStyle(
@@ -619,6 +768,7 @@ class _EventsPageState extends ConsumerState<EventsPage> {
                           itemCount: dayEvents.length,
                           itemBuilder: (context, index) {
                             final event = dayEvents[index];
+                            final hasRrule = (event['rrule'] as String?)?.isNotEmpty ?? false;
                             return Card(
                               margin: const EdgeInsets.only(bottom: 8),
                               child: ListTile(
@@ -626,7 +776,16 @@ class _EventsPageState extends ConsumerState<EventsPage> {
                                   backgroundColor: _eventColor(event['event_type'] ?? 'event'),
                                   child: Icon(_eventIcon(event['event_type'] ?? 'event'), color: Colors.white),
                                 ),
-                                title: Text(event['title'] ?? ''),
+                                title: Row(
+                                  children: [
+                                    Flexible(child: Text(event['title'] ?? '', overflow: TextOverflow.ellipsis)),
+                                    if (hasRrule)
+                                      const Padding(
+                                        padding: EdgeInsets.only(left: 4),
+                                        child: Icon(Icons.repeat, size: 16, color: Colors.grey),
+                                      ),
+                                  ],
+                                ),
                                 subtitle: Text(_formatTime(event)),
                                 trailing: IconButton(
                                   icon: const Icon(Icons.delete_outline),

@@ -573,6 +573,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "2.6.5"
+  rrule:
+    dependency: "direct main"
+    description:
+      name: rrule
+      sha256: f6f6ad5bf7b19d218d4c985d6055d3c9717f1d6efd5d1c0127b1146f1eb3640c
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "0.2.18"
   shared_preferences:
     dependency: "direct main"
     description:
@@ -746,6 +754,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "0.7.12"
+  time:
+    dependency: transitive
+    description:
+      name: time
+      sha256: "46187cf30bffdab28c56be9a63861b36e4ab7347bf403297595d6a97e10c789f"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "2.1.6"
   timing:
     dependency: transitive
     description:
