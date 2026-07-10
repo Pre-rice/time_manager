@@ -687,6 +687,79 @@ def period_to_time(period_str: str) -> tuple[str, str]:
     return (start, end)
 
 
+def _extract_semesters_json(html: str) -> list | None:
+    """
+    暴力提取页面中 semesters 的 JSON 数据。
+    页面中的格式是: var semesters = JSON.parse('[...大型转义JSON...]');
+    由于 JS 转义层级复杂，正则难以正确提取，这里用字符串搜索+逐步清理的方式。
+    """
+    import json, logging
+    logger = logging.getLogger(__name__)
+    
+    # 定位 JSON.parse(' 和 ');
+    marker = "JSON.parse('"
+    idx = html.find(marker)
+    if idx < 0:
+        return None
+    
+    content_start = idx + len(marker)
+    
+    # 找结束位置：从 content_start 往后找 '); 
+    end_markers = ["');\n", "');", "'); ", "');\r"]
+    end_idx = -1
+    for em in end_markers:
+        ei = html.find(em, content_start)
+        if ei >= 0:
+            end_idx = ei
+            break
+    
+    if end_idx < 0:
+        return None
+    
+    raw = html[content_start:end_idx]
+    logger.info(f"Extracted raw semesters string: {len(raw)} chars, preview: {raw[:100]}")
+    
+    # 暴力转义清理：JS 序列化 JSON 到 Python 字符串再经 HTML 的转义层级
+    # 先替换 4 层转义，再 2 层，等等
+    attempts = []
+    
+    # 尝试 1: 直接解析（如果本来就没转义）
+    attempts.append(raw)
+    
+    # 尝试 2: 去掉 \\" → "，去掉 \\n → ''，去掉 \\t → ''
+    cleaned = raw.replace('\\\\"', '"').replace('\\"', '"')
+    cleaned = cleaned.replace('\\\\n', '').replace('\\n', '').replace('\\\\t', '').replace('\\t', '')
+    attempts.append(cleaned)
+    
+    # 尝试 3: 去掉所有反斜杠（除 \/ 外，但 JSON 中不常见）
+    import re as _re
+    cleaned2 = _re.sub(r'\\(.)', r'\1', raw)
+    attempts.append(cleaned2)
+    
+    # 尝试 4: 逐步清理 - 先去掉 \\" 变成 \"，再从 \" 变成 "
+    cleaned3 = raw
+    for _ in range(3):
+        cleaned3 = cleaned3.replace('\\\\"', '\\"')
+    cleaned3 = cleaned3.replace('\\"', '"')
+    cleaned3 = _re.sub(r'\\([^"])', '', cleaned3)  # 去掉其他转义
+    attempts.append(cleaned3)
+    
+    for i, attempt in enumerate(attempts):
+        if not attempt or len(attempt) < 10:
+            continue
+        try:
+            data = json.loads(attempt)
+            if isinstance(data, list) and len(data) > 0:
+                logger.info(f"Semesters extracted via attempt {i+1}: {len(data)} entries")
+                return data
+        except (json.JSONDecodeError, ValueError) as e:
+            if i == len(attempts) - 1:
+                logger.warning(f"Last attempt failed: {e}")
+            continue
+    
+    return None
+
+
 def parse_all_semester_dates(page_html: str) -> dict[int, str]:
     """
     解析课表页面 HTML 中 var semesters = JSON.parse(...) 的所有学期日期。
@@ -703,31 +776,104 @@ def parse_all_semester_dates(page_html: str) -> dict[int, str]:
     
     all_sems = []
     
-    # 方法1: 先在 HTML 中找到包含 var semesters 的 <script> 块
-    script_match = re.search(r'<script[^>]*>(.*?)</script>', page_html, re.DOTALL | re.IGNORECASE)
-    html_block = page_html
+    # 方法1: 直接在 HTML 中找 var semesters = JSON.parse(...)
+    # 有些页面中 semesters 数据在 script 标签内，需要先提取 script 内容
+    scripts = re.findall(r'<script[^>]*>(.*?)</script>', page_html, re.DOTALL | re.IGNORECASE)
+    for script in scripts:
+        if 'semesters' in script:
+            # 在这个 script 中查找 JSON.parse
+            # 注意：JS 转义后的字符串可能是 \" 或 \\"，需要用两步清理
+            # 正则匹配时用 .+? 可能匹配过头，改用更精确的匹配方式
+            # 先找 JSON.parse 的位置，然后找结束的 ');
+            start_idx = script.find("JSON.parse('")
+            if start_idx < 0:
+                start_idx = script.find("JSON.parse( '")
+            if start_idx >= 0:
+                # JSON 内容从 start_idx + len("JSON.parse('") 开始
+                content_start = script.index("'", start_idx) + 1
+                # 结束标记是 '); 或者 ');
+                # 从 content_start 之后找第一个 '); 不包含在转义字符串中的
+                # 简单做法：找 '); 的位置
+                end_markers = ["');", "') ;", "'); //", "');\n"]
+                end_idx = -1
+                for marker in end_markers:
+                    ei = script.find(marker, content_start)
+                    if ei >= 0:
+                        end_idx = ei
+                        break
+                if end_idx < 0:
+                    # 再尝试正则
+                    for pattern in [
+                        r"JSON\.parse\(\s*'(.+?)'\s*\)\s*;",
+                    ]:
+                        match = re.search(pattern, script, re.DOTALL)
+                        if match:
+                            raw = match.group(1)
+                            try:
+                                # 处理转义
+                                cleaned = raw.replace('\\\\"', '\\"').replace('\\"', '"').replace("\\'", "'")
+                                cleaned = cleaned.strip()
+                                data = json.loads(cleaned)
+                                if isinstance(data, list) and len(data) > 0:
+                                    all_sems = data
+                                    logger.info(f"parse_all_semester_dates: found {len(all_sems)} semesters via script regex")
+                                    break
+                            except Exception:
+                                continue
+                    if all_sems:
+                        break
+                else:
+                    raw = script[content_start:end_idx]
+                    try:
+                        # 处理转义：JS 序列化的 JSON 字符串中
+                        # \\" → \" → "
+                        cleaned = raw.replace('\\\\"', '\\"').replace('\\"', '"').replace("\\'", "'")
+                        cleaned = cleaned.replace('\\\\n', '').replace('\\\\t', '')
+                        cleaned = cleaned.strip()
+                        data = json.loads(cleaned)
+                        if isinstance(data, list):
+                            all_sems = data
+                            logger.info(f"parse_all_semester_dates: found {len(all_sems)} semesters via script index")
+                            break
+                    except (json.JSONDecodeError, ValueError) as e:
+                        logger.warning(f"Script extraction failed: {e}, raw len={len(raw)}, preview={raw[:200]}")
+                        # 如果包含多余字符，尝试逐层清理
+                        # 有时页面中有多个 '); 匹配，我们取短的
+                        for end_pos in range(end_idx-1, content_start, -1):
+                            if script[end_pos:end_pos+2] == "')":
+                                try:
+                                    raw2 = script[content_start:end_pos]
+                                    cleaned2 = raw2.replace('\\\\"', '\\"').replace('\\"', '"').replace("\\'", "'")
+                                    cleaned2 = cleaned2.strip()
+                                    data = json.loads(cleaned2)
+                                    if isinstance(data, list):
+                                        all_sems = data
+                                        logger.info(f"parse_all_semester_dates: found {len(all_sems)} semesters via backtrack")
+                                        break
+                                except Exception:
+                                    continue
+                    if all_sems:
+                        break
     
-    # 方法2: 直接找 semesters = 所在的行
-    for pattern in [
-        # 匹配 "var semesters = JSON.parse('[...]')" 格式（最常见）
-        r'var\s+semesters\s*=\s*JSON\.parse\(\s*\'(.+?)\'\)\s*;',
-        # 匹配 "semesters = JSON.parse('[...]')" 格式
-        r'semesters\s*=\s*JSON\.parse\(\s*\'(.+?)\'\)\s*;',
-    ]:
-        match = re.search(pattern, html_block, re.DOTALL)
-        if match:
-            raw = match.group(1)
-            try:
-                # 处理转义
-                raw_cleaned = raw.replace('\\"', '"').replace("\\'", "'")
-                data = json.loads(raw_cleaned)
-                if isinstance(data, list):
-                    all_sems = data
-                    logger.info(f"parse_all_semester_dates: found {len(all_sems)} semesters via JSON.parse")
-                    break
-            except (json.JSONDecodeError, ValueError) as e:
-                logger.warning(f"JSON.parse extraction failed: {e}")
-                continue
+    # 方法2: 整个页面直接查找 JSON.parse
+    if not all_sems:
+        for pattern in [
+            r'JSON\.parse\(\s*\'(.+?)\'\)\s*',
+        ]:
+            match = re.search(pattern, page_html, re.DOTALL)
+            if match:
+                raw = match.group(1)
+                try:
+                    cleaned = raw.replace('\\\\"', '\\"').replace('\\"', '"').replace("\\'", "'").replace('\\n', '').replace('\\t', '')
+                    cleaned = cleaned.strip()
+                    data = json.loads(cleaned)
+                    if isinstance(data, list):
+                        all_sems = data
+                        logger.info(f"parse_all_semester_dates: found {len(all_sems)} semesters via whole-page JSON.parse")
+                        break
+                except (json.JSONDecodeError, ValueError) as e:
+                    logger.warning(f"Whole-page JSON.parse failed: {e}")
+                    continue
     
     # 方法3: 直接匹配 JSON.parse 中的转义字符串（逐个字符拼凑）
     if not all_sems:
@@ -741,8 +887,9 @@ def parse_all_semester_dates(page_html: str) -> dict[int, str]:
             if end_idx >= 0:
                 raw = page_html[start_idx:end_idx]
                 try:
-                    raw_cleaned = raw.replace('\\"', '"').replace("\\'", "'")
-                    data = json.loads(raw_cleaned)
+                    cleaned = raw.replace('\\\\"', '\\"').replace('\\"', '"').replace("\\'", "'").replace('\\n', '').replace('\\t', '')
+                    cleaned = cleaned.strip()
+                    data = json.loads(cleaned)
                     if isinstance(data, list):
                         all_sems = data
                         logger.info(f"parse_all_semester_dates: found {len(all_sems)} semesters via direct extraction")

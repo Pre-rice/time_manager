@@ -760,12 +760,38 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
     
     logger.info(f"Course page size: {len(resp.text)}, logon={'logon' in resp.text[:300].lower()}")
     
-    # 解析所有学期的 startDate
-    all_semester_dates = parse_all_semester_dates(resp.text)
-    logger.info(f"Parsed semester dates: {all_semester_dates}")
+    # 直接解析页面中 var semesters = JSON.parse('...') 的真实数据
+    # 页面格式: var semesters = JSON.parse('[{\"startDate\":\"2026-09-06\",...,\"id\":527},...]');
+    # 提取中间字符串后，将 JS 转义的 \" 替换为 " 即可得到标准 JSON
+    all_semester_dates = {}
+    sem_match = re.search(r"var\s+semesters\s*=\s*JSON\.parse\(\s*'(.+?)'\s*\)\s*;", resp.text, re.DOTALL)
+    if sem_match:
+        raw = sem_match.group(1)
+        try:
+            # JS 转义: \" → "（只处理这一个转义层级，因为 JSON 中只有双引号需要转义）
+            cleaned = raw.replace('\\"', '"')
+            sems_data = json.loads(cleaned)
+            from datetime import datetime as dt, timedelta as td
+            for sem in sems_data:
+                sem_id = sem.get("id")
+                start_date_str = sem.get("startDate", "")
+                if sem_id and start_date_str:
+                    try:
+                        # startDate 是周日，+1天转周一
+                        monday = dt.strptime(start_date_str, "%Y-%m-%d") + td(days=1)
+                        all_semester_dates[int(sem_id)] = monday.strftime("%Y-%m-%d")
+                    except ValueError:
+                        logger.error(f"Bad startDate '{start_date_str}' for sem {sem_id}")
+            logger.info(f"Directly parsed semester dates from JSON.parse: {all_semester_dates}")
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to parse semesters JSON: {e}")
+            # 解析失败时也不做 fallback，让后续逻辑跳过学期
+    else:
+        logger.error("Could not find 'var semesters = JSON.parse' in page HTML")
     
-    # 从 select option 中提取学期ID
+    # 从 select option 中提取学期ID（仅用于确认有哪些学期，不用来推算日期）
     sem_options = re.findall(r'<option\s+value="(\d+)"[^>]*>([^<]+)</option>', resp.text)
+    
     sid_match = re.search(r'studentIds\s*=\s*\[(\d+)\]', resp.text)
     
     student_id = sid_match.group(1) if sid_match else ""
@@ -1049,27 +1075,6 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
     if semester_name:
         description_parts.append(f"学期：{semester_name}")
     
-    # 使用 title + weekday + start_unit 作为唯一标识
-    existing_query = await db.execute(
-        select(Event).where(
-            Event.user_id == user_id,
-            Event.source == 'fudan',
-            Event.event_type == 'class',
-            Event.title == title,
-            # 通过 description 包含周几信息来匹配
-        ).limit(10)
-    )
-    existing_events = existing_query.scalars().all()
-    
-    # 找到完全匹配（同一天 + 同节次）
-    existing = None
-    for ev in existing_events:
-        if ev.start_time:
-            ev_weekday = ev.start_time.isoweekday()  # 1=周一
-            if ev_weekday == weekday:
-                existing = ev
-                break
-
     if weekday and weeks:
         # 有排课信息 - 创建带时间的事件
         try:
@@ -1107,6 +1112,19 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
                 # 使用 RRULE 生成重复事件
                 rrule = f"FREQ=WEEKLY;COUNT={len(weeks)};BYDAY={_weekday_to_rrule(weekday)}"
             
+            # 以 title + start_time + end_time + event_type + source 作为唯一标识
+            existing_query = await db.execute(
+                select(Event).where(
+                    Event.user_id == user_id,
+                    Event.source == 'fudan',
+                    Event.event_type == 'class',
+                    Event.title == title,
+                    Event.start_time == first_start,
+                    Event.end_time == first_end,
+                ).limit(1)
+            )
+            existing = existing_query.scalar_one_or_none()
+            
             if not existing:
                 event = Event(
                     user_id=user_id,
@@ -1130,7 +1148,17 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
                 logger.info(f"Updated class event: {title} weekday={weekday} start={first_start} rrule={rrule}")
         except Exception as e:
             logger.warning(f"Failed to create time-based event for {title} (weekday={weekday}): {e}")
-            # fallback: 创建无时间事件
+            # fallback: 创建无时间事件（按 title 匹配去重）
+            existing_query = await db.execute(
+                select(Event).where(
+                    Event.user_id == user_id,
+                    Event.source == 'fudan',
+                    Event.event_type == 'class',
+                    Event.title == title,
+                    Event.start_time.is_(None),
+                ).limit(1)
+            )
+            existing = existing_query.scalar_one_or_none()
             if not existing:
                 event = Event(
                     user_id=user_id,
@@ -1144,7 +1172,17 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
             else:
                 existing.description = ' | '.join(description_parts) if description_parts else None
     else:
-        # 没有排课信息 - 仅创建基本信息事件
+        # 没有排课信息 - 仅创建基本信息事件（按 title 匹配去重）
+        existing_query = await db.execute(
+            select(Event).where(
+                Event.user_id == user_id,
+                Event.source == 'fudan',
+                Event.event_type == 'class',
+                Event.title == title,
+                Event.start_time.is_(None),
+            ).limit(1)
+        )
+        existing = existing_query.scalar_one_or_none()
         if not existing:
             event = Event(
                 user_id=user_id,
@@ -1207,14 +1245,28 @@ async def _upsert_exam_event(db: AsyncSession, user_id: uuid.UUID, exam: dict):
     if exam.get('teacher'):
         description_parts.append(f"教师：{exam['teacher']}")
 
-    existing_query = await db.execute(
-        select(Event).where(
-            Event.user_id == user_id,
-            Event.source == 'fudan',
-            Event.title == title,
-            Event.event_type == 'exam',
-        ).limit(1)
-    )
+    if start_time:
+        # 有确定时间的考试：按 title + start_time 匹配
+        existing_query = await db.execute(
+            select(Event).where(
+                Event.user_id == user_id,
+                Event.source == 'fudan',
+                Event.event_type == 'exam',
+                Event.title == title,
+                Event.start_time == start_time,
+            ).limit(1)
+        )
+    else:
+        # 无时间的考试：仅按 title 匹配
+        existing_query = await db.execute(
+            select(Event).where(
+                Event.user_id == user_id,
+                Event.source == 'fudan',
+                Event.event_type == 'exam',
+                Event.title == title,
+                Event.start_time.is_(None),
+            ).limit(1)
+        )
     existing = existing_query.scalar_one_or_none()
 
     if existing:
