@@ -33,7 +33,8 @@ timeout /t 3 /nobreak >nul
 :: ===== 步骤 4: 构建前端 =====
 echo [4/5] 构建前端...
 cd /d e:\编程\time_manager\frontend
-D:\Flutter\bin\flutter.bat build web --release >nul 2>&1
+echo   正在编译 Flutter Web（约 1-2 分钟）...
+D:\Flutter\bin\flutter.bat build web --release
 if %errorlevel% neq 0 (
     echo   ❌ 前端构建失败
     pause
