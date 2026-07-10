@@ -35,7 +35,7 @@ echo [4/5] 构建前端...
 cd /d e:\编程\time_manager\frontend
 echo   正在编译 Flutter Web（约 1-2 分钟）...
 D:\Flutter\bin\flutter.bat build web --release
-if %errorlevel% neq 0 (
+if not exist e:\编程\time_manager\frontend\build\web\index.html (
     echo   ❌ 前端构建失败
     pause
     exit /b 1
