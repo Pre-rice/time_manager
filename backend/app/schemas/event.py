@@ -6,6 +6,11 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
+class PreparationSlot(BaseModel):
+    start_time: datetime
+    end_time: datetime
+
+
 class EventCreate(BaseModel):
     title: str
     description: str | None = None
@@ -15,6 +20,7 @@ class EventCreate(BaseModel):
     is_all_day: bool = False
     rrule: str | None = None
     preparation_minutes: int | None = None
+    preparation_slots: list[PreparationSlot] | None = None
     source: str = "manual"
     is_preparation: bool = False
     parent_event_id: str | None = None
@@ -30,6 +36,7 @@ class EventUpdate(BaseModel):
     is_all_day: bool | None = None
     rrule: str | None = None
     preparation_minutes: int | None = None
+    preparation_slots: list[PreparationSlot] | None = None
     source: str | None = None
     is_preparation: bool | None = None
     parent_event_id: str | None = None

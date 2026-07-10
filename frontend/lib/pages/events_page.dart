@@ -18,6 +18,13 @@ final _eventsProvider = FutureProvider.autoDispose<List<dynamic>>((ref) async {
   }
 });
 
+/// 准备时段数据类
+class _PrepSlot {
+  DateTime startTime;
+  DateTime endTime;
+  _PrepSlot({required this.startTime, required this.endTime});
+}
+
 /// 可复用的日程编辑弹窗（支持所有字段）
 Future<Map<String, dynamic>?> showEventEditDialog(
   BuildContext context,
@@ -32,15 +39,16 @@ Future<Map<String, dynamic>?> showEventEditDialog(
   TimeOfDay endTime = TimeOfDay.fromDateTime(DateTime.now().add(const Duration(hours: 1)));
   String eventType = (event?['event_type'] as String?) ?? 'event';
   bool isAllDay = (event?['is_all_day'] as bool?) ?? false;
-  bool isPreparation = (event?['is_preparation'] as bool?) ?? false;
-  final prepMinutesCtrl = TextEditingController(
-    text: (event?['preparation_minutes'] as int?)?.toString() ?? '',
-  );
 
   // RRULE 状态
-  String repeatFreq = 'none'; // none, daily, weekly, monthly, yearly
+  String repeatFreq = 'none';
   int repeatInterval = 1;
   int repeatCount = 0;
+  // BYDAY：选中的星期几，1=周一 ... 7=周日
+  Set<int> byDays = {};
+
+  // 准备时段列表
+  final prepSlots = <_PrepSlot>[];
 
   if (isEdit) {
     final startStr = event['start_time'] as String?;
@@ -68,6 +76,15 @@ Future<Map<String, dynamic>?> showEventEditDialog(
       if (intervalMatch != null) repeatInterval = int.parse(intervalMatch.group(1)!);
       final countMatch = RegExp(r'COUNT=(\d+)').firstMatch(existingRrule);
       if (countMatch != null) repeatCount = int.parse(countMatch.group(1)!);
+      // 解析 BYDAY
+      final byDayMatch = RegExp(r'BYDAY=([A-Z,]+)').firstMatch(existingRrule);
+      if (byDayMatch != null) {
+        final dayMap = {'MO': 1, 'TU': 2, 'WE': 3, 'TH': 4, 'FR': 5, 'SA': 6, 'SU': 7};
+        for (final d in byDayMatch.group(1)!.split(',')) {
+          final num = dayMap[d.trim()];
+          if (num != null) byDays.add(num);
+        }
+      }
     }
   }
 
@@ -75,6 +92,29 @@ Future<Map<String, dynamic>?> showEventEditDialog(
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setState) {
+        // 准备时段日期/时间选择
+        Future<void> pickPrepSlotTime(int index, bool isStart) async {
+          final slot = prepSlots[index];
+          final initial = isStart ? slot.startTime : slot.endTime;
+          final date = await showDatePicker(
+            context: ctx,
+            initialDate: initial,
+            firstDate: DateTime.now().subtract(const Duration(days: 30)),
+            lastDate: DateTime.now().add(const Duration(days: 365)),
+          );
+          if (date == null) return;
+          final time = await showTimePicker(
+            context: ctx,
+            initialTime: TimeOfDay.fromDateTime(initial),
+          );
+          if (time == null) return;
+          final dt = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+          setState(() {
+            if (isStart) prepSlots[index].startTime = dt;
+            else prepSlots[index].endTime = dt;
+          });
+        }
+
         Future<void> pickDate(bool isStart) async {
           final initial = isStart ? startDate : endDate;
           final picked = await showDatePicker(
@@ -110,6 +150,7 @@ Future<Map<String, dynamic>?> showEventEditDialog(
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 TextField(
                   controller: titleCtrl,
@@ -145,7 +186,6 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   ),
                 ),
                 const SizedBox(height: 8),
-                // 开始时间（非全天时才显示）
                 if (!isAllDay)
                   InkWell(
                     onTap: () => pickTime(true),
@@ -164,7 +204,6 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   ),
                 ),
                 const SizedBox(height: 8),
-                // 结束时间（非全天时才显示）
                 if (!isAllDay)
                   InkWell(
                     onTap: () => pickTime(false),
@@ -180,8 +219,10 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   value: isAllDay,
                   onChanged: (v) => setState(() => isAllDay = v),
                 ),
+                const Divider(),
+                // ===== 重复设置 =====
+                const Text('重复设置', style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
-                // 重复设置
                 DropdownButtonFormField<String>(
                   value: repeatFreq,
                   decoration: const InputDecoration(labelText: '重复', border: OutlineInputBorder()),
@@ -196,18 +237,39 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                     if (v != null) setState(() => repeatFreq = v);
                   },
                 ),
+                if (repeatFreq == 'weekly') ...[
+                  const SizedBox(height: 8),
+                  const Text('选择每周重复日：', style: TextStyle(fontSize: 13)),
+                  const SizedBox(height: 4),
+                  Wrap(
+                    spacing: 4,
+                    children: List.generate(7, (i) {
+                      final dayNum = i + 1; // 1=周一 ... 7=周日
+                      final labels = ['一', '二', '三', '四', '五', '六', '日'];
+                      final selected = byDays.contains(dayNum);
+                      return FilterChip(
+                        label: Text(labels[i], style: TextStyle(fontSize: 13, color: selected ? Colors.white : null)),
+                        selected: selected,
+                        onSelected: (v) {
+                          setState(() {
+                            if (v) byDays.add(dayNum);
+                            else byDays.remove(dayNum);
+                          });
+                        },
+                        selectedColor: Theme.of(ctx).colorScheme.primary,
+                        checkmarkColor: Colors.white,
+                        visualDensity: VisualDensity.compact,
+                      );
+                    }),
+                  ),
+                ],
                 if (repeatFreq != 'none') ...[
                   const SizedBox(height: 8),
-                  // 重复间隔
                   Row(
                     children: [
                       Expanded(
                         child: TextField(
-                          decoration: const InputDecoration(
-                            labelText: '间隔',
-                            hintText: '1',
-                            border: OutlineInputBorder(),
-                          ),
+                          decoration: const InputDecoration(labelText: '间隔', hintText: '1', border: OutlineInputBorder()),
                           keyboardType: TextInputType.number,
                           controller: TextEditingController(text: repeatInterval.toString()),
                           onChanged: (v) {
@@ -219,11 +281,7 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                       const SizedBox(width: 8),
                       Expanded(
                         child: TextField(
-                          decoration: const InputDecoration(
-                            labelText: '重复次数（0=无限）',
-                            hintText: '0',
-                            border: OutlineInputBorder(),
-                          ),
+                          decoration: const InputDecoration(labelText: '重复次数（0=无限）', hintText: '0', border: OutlineInputBorder()),
                           keyboardType: TextInputType.number,
                           controller: TextEditingController(text: repeatCount.toString()),
                           onChanged: (v) {
@@ -235,27 +293,77 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                     ],
                   ),
                 ],
-                const SizedBox(height: 8),
-                // 准备日程标记
-                SwitchListTile(
-                  title: const Text('这是一段准备时间'),
-                  subtitle: isPreparation
-                      ? const Text('用于为某个日程或待办做准备')
-                      : null,
-                  value: isPreparation,
-                  onChanged: (v) => setState(() => isPreparation = v),
+                const Divider(),
+                // ===== 准备时段 =====
+                Row(
+                  children: [
+                    const Text('准备时段', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const Spacer(),
+                    TextButton.icon(
+                      icon: const Icon(Icons.add, size: 18),
+                      label: const Text('添加'),
+                      onPressed: () {
+                        setState(() {
+                          prepSlots.add(_PrepSlot(
+                            startTime: startDate.add(const Duration(hours: 8)),
+                            endTime: startDate.add(const Duration(hours: 9)),
+                          ));
+                        });
+                      },
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 12),
-                // 准备时间（分钟）
-                TextField(
-                  controller: prepMinutesCtrl,
-                  decoration: const InputDecoration(
-                    labelText: '准备时间（分钟）',
-                    hintText: '如：30',
-                    border: OutlineInputBorder(),
+                if (prepSlots.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text('暂无准备时段', style: TextStyle(color: Theme.of(ctx).colorScheme.onSurfaceVariant, fontSize: 13)),
                   ),
-                  keyboardType: TextInputType.number,
-                ),
+                ...prepSlots.asMap().entries.map((entry) {
+                  final i = entry.key;
+                  final slot = entry.value;
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => pickPrepSlotTime(i, true),
+                            child: InputDecorator(
+                              decoration: const InputDecoration(
+                                labelText: '开始',
+                                border: OutlineInputBorder(),
+                                contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                              ),
+                              child: Text(DateFormat('MM-dd HH:mm').format(slot.startTime), style: const TextStyle(fontSize: 13)),
+                            ),
+                          ),
+                        ),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 4),
+                          child: Text('~', style: TextStyle(fontSize: 16)),
+                        ),
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => pickPrepSlotTime(i, false),
+                            child: InputDecorator(
+                              decoration: const InputDecoration(
+                                labelText: '结束',
+                                border: OutlineInputBorder(),
+                                contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                              ),
+                              child: Text(DateFormat('MM-dd HH:mm').format(slot.endTime), style: const TextStyle(fontSize: 13)),
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.remove_circle_outline, color: Colors.red, size: 20),
+                          onPressed: () => setState(() => prepSlots.removeAt(i)),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ],
+                    ),
+                  );
+                }),
               ],
             ),
           ),
@@ -269,7 +377,6 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   'description': descCtrl.text,
                   'event_type': eventType,
                   'is_all_day': isAllDay,
-                  'is_preparation': isPreparation,
                   'type': 'event',
                 };
                 if (!isAllDay) {
@@ -288,11 +395,23 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   };
                   String rrule = 'FREQ=${freqMap[repeatFreq]};INTERVAL=$repeatInterval';
                   if (repeatCount > 0) rrule += ';COUNT=$repeatCount';
+                  // 每周时添加 BYDAY
+                  if (repeatFreq == 'weekly' && byDays.isNotEmpty) {
+                    final dayCodes = {1: 'MO', 2: 'TU', 3: 'WE', 4: 'TH', 5: 'FR', 6: 'SA', 7: 'SU'};
+                    final sorted = byDays.toList()..sort();
+                    rrule += ';BYDAY=${sorted.map((d) => dayCodes[d]!).join(',')}';
+                  }
                   data['rrule'] = rrule;
                 }
-                final prepMin = int.tryParse(prepMinutesCtrl.text);
-                if (prepMin != null && prepMin > 0) {
-                  data['preparation_minutes'] = prepMin;
+                // 准备时段
+                if (prepSlots.isNotEmpty) {
+                  data['preparation_slots'] = prepSlots
+                      .where((s) => s.startTime.isBefore(s.endTime))
+                      .map((s) => {
+                        'start_time': s.startTime.toIso8601String(),
+                        'end_time': s.endTime.toIso8601String(),
+                      })
+                      .toList();
                 }
                 Navigator.pop(ctx, data);
               },
@@ -376,7 +495,6 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
                   maxLines: 2,
                 ),
                 const SizedBox(height: 12),
-                // 截止日期
                 InkWell(
                   onTap: pickDate,
                   child: InputDecorator(
@@ -385,7 +503,6 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
                   ),
                 ),
                 const SizedBox(height: 8),
-                // 截止时间
                 InkWell(
                   onTap: pickTime,
                   child: InputDecorator(
@@ -394,7 +511,6 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
                   ),
                 ),
                 const SizedBox(height: 12),
-                // 重要标记
                 SwitchListTile(
                   title: const Text('重要'),
                   value: isImportant,
@@ -402,7 +518,6 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
                   secondary: Icon(isImportant ? Icons.star : Icons.star_border, color: isImportant ? Colors.amber : null),
                 ),
                 const SizedBox(height: 8),
-                // 状态
                 DropdownButtonFormField<String>(
                   value: status,
                   decoration: const InputDecoration(labelText: '状态', border: OutlineInputBorder()),
@@ -417,7 +532,6 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
                   },
                 ),
                 const SizedBox(height: 12),
-                // 准备时间（分钟）
                 TextField(
                   controller: prepMinutesCtrl,
                   decoration: const InputDecoration(
@@ -470,9 +584,10 @@ class _EventsPageState extends ConsumerState<EventsPage> {
   DateTime _selectedDay = DateTime.now();
   DateTime _focusedDay = DateTime.now();
 
-  /// 根据 RRULE 展开重复事件
-  List<Map<String, dynamic>> _expandRecurringEvents(List<dynamic> events, DateTime monthStart, DateTime monthEnd) {
-    final result = <Map<String, dynamic>>[];
+  /// 获取当月所有日程（含 RRULE 展开），按日期分组
+  Map<DateTime, List<Map<String, dynamic>>> _buildEventMap(List<dynamic> events, DateTime monthStart, DateTime monthEnd) {
+    final map = <DateTime, List<Map<String, dynamic>>>{};
+
     for (final e in events) {
       final event = Map<String, dynamic>.from(e as Map);
       final rruleStr = event['rrule'] as String?;
@@ -485,15 +600,16 @@ class _EventsPageState extends ConsumerState<EventsPage> {
       } catch (_) {
         continue;
       }
-      if (startTimeParsed == null) continue;
 
       if (rruleStr == null || rruleStr.isEmpty) {
         // 非重复事件
-        result.add(event);
+        final key = DateTime(startTimeParsed.year, startTimeParsed.month, startTimeParsed.day);
+        map.putIfAbsent(key, () => []);
+        map[key]!.add(event);
         continue;
       }
 
-      // 尝试用 rrule 包解析
+      // 解析 RRULE 并展开
       try {
         final rrule = RecurrenceRule(
           frequency: _parseFreq(rruleStr),
@@ -507,21 +623,36 @@ class _EventsPageState extends ConsumerState<EventsPage> {
           includeAfter: true,
           includeBefore: true,
         );
+        final duration = event['end_time'] != null
+            ? DateTime.parse(event['end_time']).difference(startTimeParsed)
+            : const Duration(hours: 1);
+
         for (final occ in occurrences) {
           final ev = Map<String, dynamic>.from(event);
-          final duration = event['end_time'] != null
-              ? DateTime.parse(event['end_time']).difference(startTimeParsed)
-              : const Duration(hours: 1);
           ev['start_time'] = occ.toIso8601String();
           ev['end_time'] = occ.add(duration).toIso8601String();
-          result.add(ev);
+          final key = DateTime(occ.year, occ.month, occ.day);
+          map.putIfAbsent(key, () => []);
+          map[key]!.add(ev);
         }
       } catch (_) {
-        // rrule 解析失败则显示原始事件
-        result.add(event);
+        // 解析失败直接使用原始事件
+        final key = DateTime(startTimeParsed.year, startTimeParsed.month, startTimeParsed.day);
+        map.putIfAbsent(key, () => []);
+        map[key]!.add(event);
       }
     }
-    return result;
+
+    // 按时间排序
+    for (final list in map.values) {
+      list.sort((a, b) {
+        final aStart = (a['start_time'] as String?) ?? '';
+        final bStart = (b['start_time'] as String?) ?? '';
+        return aStart.compareTo(bStart);
+      });
+    }
+
+    return map;
   }
 
   Frequency _parseFreq(String rrule) {
@@ -542,32 +673,6 @@ class _EventsPageState extends ConsumerState<EventsPage> {
     final match = RegExp(r'COUNT=(\d+)').firstMatch(rrule);
     if (match != null) return int.parse(match.group(1)!);
     return null;
-  }
-
-  List<Map<String, dynamic>> _getEventsForDay(DateTime day, List<dynamic> events) {
-    // 计算当月范围用于 RRULE 展开
-    final monthStart = DateTime(day.year, day.month, 1);
-    final monthEnd = DateTime(day.year, day.month + 1, 0, 23, 59, 59);
-
-    final expanded = _expandRecurringEvents(events, monthStart, monthEnd);
-
-    final result = <Map<String, dynamic>>[];
-    for (final event in expanded) {
-      final startStr = event['start_time'] as String?;
-      if (startStr == null) continue;
-      try {
-        final date = DateTime.parse(startStr.substring(0, 10));
-        if (isSameDay(day, date)) {
-          result.add(event);
-        }
-      } catch (_) {}
-    }
-    result.sort((a, b) {
-      final aStart = a['start_time'] as String? ?? '';
-      final bStart = b['start_time'] as String? ?? '';
-      return aStart.compareTo(bStart);
-    });
-    return result;
   }
 
   Future<void> _confirmDelete(Map<String, dynamic> event) async {
@@ -605,9 +710,8 @@ class _EventsPageState extends ConsumerState<EventsPage> {
           'is_all_day': result['is_all_day'],
           if (result['start_time'] != null) 'start_time': result['start_time'],
           if (result['end_time'] != null) 'end_time': result['end_time'],
-          'is_preparation': result['is_preparation'],
-          if (result['preparation_minutes'] != null) 'preparation_minutes': result['preparation_minutes'],
           if (result['rrule'] != null) 'rrule': result['rrule'],
+          if (result['preparation_slots'] != null) 'preparation_slots': result['preparation_slots'],
         });
       } else {
         await api.createEvent({
@@ -617,9 +721,8 @@ class _EventsPageState extends ConsumerState<EventsPage> {
           'is_all_day': result['is_all_day'],
           if (result['start_time'] != null) 'start_time': result['start_time'],
           if (result['end_time'] != null) 'end_time': result['end_time'],
-          'is_preparation': result['is_preparation'],
-          if (result['preparation_minutes'] != null) 'preparation_minutes': result['preparation_minutes'],
           if (result['rrule'] != null) 'rrule': result['rrule'],
+          if (result['preparation_slots'] != null) 'preparation_slots': result['preparation_slots'],
         });
       }
       ref.invalidate(_eventsProvider);
@@ -697,7 +800,12 @@ class _EventsPageState extends ConsumerState<EventsPage> {
         error: (_, __) => _emptyView(),
         data: (events) {
           final weekDay = weekStart.isMonday ? StartingDayOfWeek.monday : StartingDayOfWeek.sunday;
-          final dayEvents = _getEventsForDay(_selectedDay, events);
+
+          // 一次性计算当前聚焦月的所有日程
+          final monthStart = DateTime(_focusedDay.year, _focusedDay.month, 1);
+          final monthEnd = DateTime(_focusedDay.year, _focusedDay.month + 1, 0, 23, 59, 59);
+          final eventMap = _buildEventMap(events, monthStart, monthEnd);
+          final dayEvents = eventMap[DateTime(_selectedDay.year, _selectedDay.month, _selectedDay.day)] ?? [];
 
           return Column(
             children: [
@@ -719,7 +827,7 @@ class _EventsPageState extends ConsumerState<EventsPage> {
                     setState(() => _focusedDay = focusedDay);
                   },
                   eventLoader: (day) {
-                    return dayEvents;
+                    return eventMap[DateTime(day.year, day.month, day.day)] ?? [];
                   },
                   headerStyle: const HeaderStyle(formatButtonVisible: false, titleCentered: true),
                   calendarStyle: CalendarStyle(
@@ -731,10 +839,30 @@ class _EventsPageState extends ConsumerState<EventsPage> {
                       color: theme.colorScheme.primary,
                       shape: BoxShape.circle,
                     ),
-                    markerDecoration: BoxDecoration(
-                      color: theme.colorScheme.secondary,
-                      shape: BoxShape.circle,
-                    ),
+                  ),
+                  calendarBuilders: CalendarBuilders(
+                    markerBuilder: (context, date, events) {
+                      if (events.isEmpty) return null;
+                      // 按类型统计数量并显示不同颜色
+                      final colors = <Color>{
+                        for (final e in events)
+                          _eventColor((e as Map)['event_type'] as String? ?? 'event')
+                      };
+                      return Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: colors.take(3).map((color) {
+                          return Container(
+                            width: 6,
+                            height: 6,
+                            margin: const EdgeInsets.symmetric(horizontal: 1),
+                            decoration: BoxDecoration(
+                              color: color,
+                              shape: BoxShape.circle,
+                            ),
+                          );
+                        }).toList(),
+                      );
+                    },
                   ),
                   locale: 'zh_CN',
                 ),
@@ -769,6 +897,7 @@ class _EventsPageState extends ConsumerState<EventsPage> {
                           itemBuilder: (context, index) {
                             final event = dayEvents[index];
                             final hasRrule = (event['rrule'] as String?)?.isNotEmpty ?? false;
+                            final isPrep = event['is_preparation'] as bool? ?? false;
                             return Card(
                               margin: const EdgeInsets.only(bottom: 8),
                               child: ListTile(
@@ -778,6 +907,11 @@ class _EventsPageState extends ConsumerState<EventsPage> {
                                 ),
                                 title: Row(
                                   children: [
+                                    if (isPrep)
+                                      const Padding(
+                                        padding: EdgeInsets.only(right: 4),
+                                        child: Icon(Icons.pending, size: 16, color: Colors.orange),
+                                      ),
                                     Flexible(child: Text(event['title'] ?? '', overflow: TextOverflow.ellipsis)),
                                     if (hasRrule)
                                       const Padding(
