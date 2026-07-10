@@ -28,8 +28,9 @@ class _PrepSlot {
 /// 可复用的日程编辑弹窗（支持所有字段）
 Future<Map<String, dynamic>?> showEventEditDialog(
   BuildContext context,
-  Map<String, dynamic>? event,
-) async {
+  Map<String, dynamic>? event, {
+  List<dynamic> allEvents = const [],
+}) async {
   final isEdit = event != null;
   final titleCtrl = TextEditingController(text: event?['title'] ?? '');
   final descCtrl = TextEditingController(text: event?['description'] ?? '');
@@ -40,12 +41,14 @@ Future<Map<String, dynamic>?> showEventEditDialog(
   String eventType = (event?['event_type'] as String?) ?? 'event';
   bool isAllDay = (event?['is_all_day'] as bool?) ?? false;
 
-  // RRULE 状态
-  String repeatFreq = 'none';
+  // RRULE 状态：none | daily | weekly | weekly_byday | monthly | monthly_byday | yearly
+  String repeatType = 'none';
   int repeatInterval = 1;
   int repeatCount = 0;
   // BYDAY：选中的星期几，1=周一 ... 7=周日
   Set<int> byDays = {};
+  // BYMONTHDAY
+  int byMonthDay = 1;
 
   // 准备时段列表
   final prepSlots = <_PrepSlot>[];
@@ -68,10 +71,14 @@ Future<Map<String, dynamic>?> showEventEditDialog(
 
     final existingRrule = event['rrule'] as String?;
     if (existingRrule != null && existingRrule.isNotEmpty) {
-      if (existingRrule.contains('FREQ=DAILY')) repeatFreq = 'daily';
-      else if (existingRrule.contains('FREQ=WEEKLY')) repeatFreq = 'weekly';
-      else if (existingRrule.contains('FREQ=MONTHLY')) repeatFreq = 'monthly';
-      else if (existingRrule.contains('FREQ=YEARLY')) repeatFreq = 'yearly';
+      final hasByDay = RegExp(r'BYDAY=').hasMatch(existingRrule);
+      final hasByMonthDay = RegExp(r'BYMONTHDAY=').hasMatch(existingRrule);
+      if (existingRrule.contains('FREQ=DAILY')) repeatType = 'daily';
+      else if (existingRrule.contains('FREQ=WEEKLY') && hasByDay) repeatType = 'weekly_byday';
+      else if (existingRrule.contains('FREQ=WEEKLY')) repeatType = 'weekly';
+      else if (existingRrule.contains('FREQ=MONTHLY') && hasByMonthDay) repeatType = 'monthly_byday';
+      else if (existingRrule.contains('FREQ=MONTHLY')) repeatType = 'monthly';
+      else if (existingRrule.contains('FREQ=YEARLY')) repeatType = 'yearly';
       final intervalMatch = RegExp(r'INTERVAL=(\d+)').firstMatch(existingRrule);
       if (intervalMatch != null) repeatInterval = int.parse(intervalMatch.group(1)!);
       final countMatch = RegExp(r'COUNT=(\d+)').firstMatch(existingRrule);
@@ -83,6 +90,28 @@ Future<Map<String, dynamic>?> showEventEditDialog(
         for (final d in byDayMatch.group(1)!.split(',')) {
           final num = dayMap[d.trim()];
           if (num != null) byDays.add(num);
+        }
+      }
+      final byMonthDayMatch = RegExp(r'BYMONTHDAY=(\d+)').firstMatch(existingRrule);
+      if (byMonthDayMatch != null) byMonthDay = int.parse(byMonthDayMatch.group(1)!);
+    }
+
+    // 编辑时回填已有准备时段
+    if (event['id'] != null) {
+      final eventId = event['id'].toString();
+      for (final e in allEvents) {
+        final m = e as Map;
+        if (m['is_preparation'] == true && m['parent_event_id']?.toString() == eventId) {
+          final s = m['start_time'] as String?;
+          final end = m['end_time'] as String?;
+          if (s != null && end != null) {
+            try {
+              prepSlots.add(_PrepSlot(
+                startTime: DateTime.parse(s),
+                endTime: DateTime.parse(end),
+              ));
+            } catch (_) {}
+          }
         }
       }
     }
@@ -224,20 +253,22 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                 const Text('重复设置', style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
-                  value: repeatFreq,
-                  decoration: const InputDecoration(labelText: '重复', border: OutlineInputBorder()),
+                  value: repeatType,
+                  decoration: const InputDecoration(labelText: '重复类型', border: OutlineInputBorder()),
                   items: const [
                     DropdownMenuItem(value: 'none', child: Text('不重复')),
                     DropdownMenuItem(value: 'daily', child: Text('每天')),
                     DropdownMenuItem(value: 'weekly', child: Text('每周')),
+                    DropdownMenuItem(value: 'weekly_byday', child: Text('每周指定日')),
                     DropdownMenuItem(value: 'monthly', child: Text('每月')),
+                    DropdownMenuItem(value: 'monthly_byday', child: Text('每月指定日')),
                     DropdownMenuItem(value: 'yearly', child: Text('每年')),
                   ],
                   onChanged: (v) {
-                    if (v != null) setState(() => repeatFreq = v);
+                    if (v != null) setState(() => repeatType = v);
                   },
                 ),
-                if (repeatFreq == 'weekly') ...[
+                if (repeatType == 'weekly_byday') ...[
                   const SizedBox(height: 8),
                   const Text('选择每周重复日：', style: TextStyle(fontSize: 13)),
                   const SizedBox(height: 4),
@@ -263,7 +294,19 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                     }),
                   ),
                 ],
-                if (repeatFreq != 'none') ...[
+                if (repeatType == 'monthly_byday') ...[
+                  const SizedBox(height: 8),
+                  TextField(
+                    decoration: const InputDecoration(labelText: '每月几号（1-31）', hintText: '15', border: OutlineInputBorder()),
+                    keyboardType: TextInputType.number,
+                    controller: TextEditingController(text: byMonthDay.toString()),
+                    onChanged: (v) {
+                      final parsed = int.tryParse(v);
+                      if (parsed != null && parsed >= 1 && parsed <= 31) byMonthDay = parsed;
+                    },
+                  ),
+                ],
+                if (repeatType != 'none') ...[
                   const SizedBox(height: 8),
                   Row(
                     children: [
@@ -386,20 +429,23 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   data['end_time'] = finalEnd.toIso8601String();
                 }
                 // RRULE
-                if (repeatFreq != 'none') {
+                if (repeatType != 'none') {
                   final freqMap = {
                     'daily': 'DAILY',
                     'weekly': 'WEEKLY',
+                    'weekly_byday': 'WEEKLY',
                     'monthly': 'MONTHLY',
+                    'monthly_byday': 'MONTHLY',
                     'yearly': 'YEARLY',
                   };
-                  String rrule = 'FREQ=${freqMap[repeatFreq]};INTERVAL=$repeatInterval';
+                  String rrule = 'FREQ=${freqMap[repeatType]};INTERVAL=$repeatInterval';
                   if (repeatCount > 0) rrule += ';COUNT=$repeatCount';
-                  // 每周时添加 BYDAY
-                  if (repeatFreq == 'weekly' && byDays.isNotEmpty) {
+                  if (repeatType == 'weekly_byday' && byDays.isNotEmpty) {
                     final dayCodes = {1: 'MO', 2: 'TU', 3: 'WE', 4: 'TH', 5: 'FR', 6: 'SA', 7: 'SU'};
                     final sorted = byDays.toList()..sort();
                     rrule += ';BYDAY=${sorted.map((d) => dayCodes[d]!).join(',')}';
+                  } else if (repeatType == 'monthly_byday') {
+                    rrule += ';BYMONTHDAY=$byMonthDay';
                   }
                   data['rrule'] = rrule;
                 }
@@ -609,13 +655,9 @@ class _EventsPageState extends ConsumerState<EventsPage> {
         continue;
       }
 
-      // 解析 RRULE 并展开
+      // 用 rrule 包解析完整的 rrule 字符串
       try {
-        final rrule = RecurrenceRule(
-          frequency: _parseFreq(rruleStr),
-          interval: _parseInterval(rruleStr),
-          count: _parseCount(rruleStr),
-        );
+        final rrule = RecurrenceRule.fromString(rruleStr);
         final occurrences = rrule.getAllInstances(
           start: startTimeParsed,
           after: monthStart.subtract(const Duration(days: 1)),
@@ -655,26 +697,6 @@ class _EventsPageState extends ConsumerState<EventsPage> {
     return map;
   }
 
-  Frequency _parseFreq(String rrule) {
-    if (rrule.contains('FREQ=DAILY')) return Frequency.daily;
-    if (rrule.contains('FREQ=WEEKLY')) return Frequency.weekly;
-    if (rrule.contains('FREQ=MONTHLY')) return Frequency.monthly;
-    if (rrule.contains('FREQ=YEARLY')) return Frequency.yearly;
-    return Frequency.daily;
-  }
-
-  int _parseInterval(String rrule) {
-    final match = RegExp(r'INTERVAL=(\d+)').firstMatch(rrule);
-    if (match != null) return int.parse(match.group(1)!);
-    return 1;
-  }
-
-  int? _parseCount(String rrule) {
-    final match = RegExp(r'COUNT=(\d+)').firstMatch(rrule);
-    if (match != null) return int.parse(match.group(1)!);
-    return null;
-  }
-
   Future<void> _confirmDelete(Map<String, dynamic> event) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -698,7 +720,9 @@ class _EventsPageState extends ConsumerState<EventsPage> {
   }
 
   Future<void> _showEditDialog(Map<String, dynamic>? event) async {
-    final result = await showEventEditDialog(context, event);
+    // 获取所有事件（用于编辑时回显准备时段）
+    final allEvents = ref.read(_eventsProvider).asData?.value ?? [];
+    final result = await showEventEditDialog(context, event, allEvents: allEvents);
     if (result == null) return;
     try {
       final api = ref.read(apiServiceProvider);
@@ -843,7 +867,6 @@ class _EventsPageState extends ConsumerState<EventsPage> {
                   calendarBuilders: CalendarBuilders(
                     markerBuilder: (context, date, events) {
                       if (events.isEmpty) return null;
-                      // 按类型统计数量并显示不同颜色
                       final colors = <Color>{
                         for (final e in events)
                           _eventColor((e as Map)['event_type'] as String? ?? 'event')
