@@ -44,10 +44,8 @@ echo   -- 编译完成
 :: ===== 步骤 5: 启动 HTTP 服务器 =====
 echo.
 echo [5/5] 启动 HTTP 服务器(端口 8080)...
-for /f "tokens=2 delims= " %%a in ('tasklist ^| findstr /i "python" ^| findstr "http.server"') do (
-    taskkill /f /pid %%a >nul 2>&1
-)
-start /B python -m http.server 8080 -d e:\编程\time_manager\frontend\build\web
+taskkill /f /im python.exe >nul 2>&1
+start /B python -m http.server 8080 --bind 0.0.0.0 -d e:\编程\time_manager\frontend\build\web
 echo   -- 前端: http://localhost:8080
 echo   -- 后端: http://localhost:8000
 echo.

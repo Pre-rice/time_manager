@@ -212,8 +212,9 @@ authserver/login (获取 lck + entityId)
 - **AI 提取弹窗复用**：`showEventEditDialog`/`showTaskEditDialog` 是顶层函数
 - **错误提示**：必须从后端提取具体信息，不能笼统
 - **编辑弹窗字段**：所有字段在 `events_page.dart` 中的 `showEventEditDialog`/`showTaskEditDialog` 中定义（是可复用的顶层函数）
-  - 日程：title, description, event_type, start_time, end_time, is_all_day, is_preparation, preparation_minutes
+  - 日程：title, description, event_type, start_time, end_time, is_all_day, is_preparation, preparation_minutes, **rrule（重复设置）**
   - 待办：title, description, deadline, is_important, status, preparation_minutes
+- **图标修复**：Flutter Web 部署时需在 `index.html` 的 `<head>` 中添加 Material Icons CDN 引用：`<link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">`
 
 ## 关于 `deploy.bat` 迁移机制
 
@@ -360,6 +361,55 @@ authserver/login (获取 lck + entityId)
 **背景**：之前的编辑弹窗只传了 title/description/start_time/end_time，后端虽然 schema 支持更多字段但前端根本没发送。用户要求"前端能编辑所有字段"。
 
 **决策**：编辑弹窗的 `Navigator.pop(ctx, ...)` 和 API 调用的 `createEvent`/`updateEvent` 必须覆盖所有 Schema 中定义的可编辑字段。使用 `if (result['xxx'] != null)` 选择性发送。
+
+#### 经验 #9：rrule 包的类名和参数名
+**背景**：使用的 Dart 包 `rrule: ^0.2.18` 中，类名为 `RecurrenceRule`（不是 `Rrule` 或 `RruleSet`），参数名为 `frequency`（不是 `freq`），`dtstart` 通过 `getAllInstances(start: ...)` 传入，而非构造参数。
+- `RecurrenceRule(frequency: Frequency.daily, interval: 1, count: 10)`
+- `rrule.getAllInstances(start: dtstart, after: ..., before: ...)`
+
+#### 经验 #10：RecurrenceRule.fromString() 可完整解析 RRULE
+**背景**：手动构造 `RecurrenceRule` 只传 `frequency/interval/count`，忽略 BYDAY、BYMONTHDAY 等参数，导致重复展开不正确。
+
+**决策**：始终用 `RecurrenceRule.fromString(rruleStr)` 工厂方法解析完整的 RFC 5545 字符串。
+
+### Phase 5.5.2 ✅ 重复日程修复 + BYDAY + 准备时段多 slot（2026-07-10 完成）
+
+**重复日程修复：**
+- 修复 eventLoader 按天返回事件（旧：`_getEventsForDay` 只对 `_selectedDay` 计算；新：`_buildEventMap` 一次性计算整个月份并建立 Map）
+- 改为 `RecurrenceRule.fromString()` 解析完整 rrule
+- markerBuilder 替代 markerDecoration 按 event_type 显示不同颜色
+
+**BYDAY 支持：**
+- 重复选项拆为 7 个独立：不重复/每天/每周/每周指定日/每月/每月指定日/每年
+- 每周指定日：FilterChip 多选一二三四五六日，生成 `BYDAY=MO,WE,FR`
+- 每月指定日：输入 1-31，生成 `BYMONTHDAY=15`
+
+**准备时段多 slot：**
+- Schema：新增 `PreparationSlot(BaseModel)` + `preparation_slots` 字段
+- 前端编辑弹窗：动态列表，每行独立开始/结束时间选择器 + 删除按钮
+- 后端：`EventService.create_event/update_event` 统一处理，`delete_event` 级联删除
+- 编辑时回填已有准备时段（`showEventEditDialog` 新增 `allEvents` 参数）
+
+### Phase 5.5.3 ✅ deploy.bat 完善（2026-07-10 完成）
+
+**deploy.bat 问题修复：**
+- `docker cp` 路径错误 — 用绝对路径 `e:\编程\time_manager\deploy_migrate.py`
+- `flutter build` 输出被 `>nul` 吞掉 — 取消隐藏，用户能看到编译进度
+- `flutter.bat` 未加 `call` — 控制权丢失，后续步骤不执行
+- `ERRORLEVEL` 误判 — 改为检查产物文件
+- `start` 命令 `-d` 被误解析为盘符 — 用 `/D` 参数设置工作目录
+- VS Code 终端不支持 `start` — 改为直接 `call flutter.bat`
+- Python http.server 默认绑定 IPv6(`::`) — 加 `--bind 0.0.0.0` 强制 IPv4
+- HTTP 服务器残留进程阻塞端口 — `taskkill /f /im python.exe` 强制清理
+
+**当前 deploy.bat 行为：**
+```
+[1/5] docker compose up -d
+[2/5] docker exec deploy_migrate.py
+[3/5] docker restart backend-api-1
+[4/5] flutter build web --debug (比 release 快 30-40%)
+[5/5] python -m http.server 8080 --bind 0.0.0.0
+```
 
 ### Phase 6 🔜 实时与提醒
 ### Phase 7 🔜 界面美化
