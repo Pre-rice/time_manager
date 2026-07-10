@@ -16,15 +16,10 @@ from app.models.fudan_credential import FudanCredential
 from app.models.event import Event
 from app.models.task import Task
 from app.services.fudan_parser import (
-    parse_fudan_data,
     parse_weekday,
     parse_weeks,
     period_to_time,
-    parse_schedule_from_draw_data,
     parse_print_data_schedules,
-    parse_all_semester_dates,
-    compute_semester_start,
-    build_rrule,
     unit_to_time,
     get_weekday_name,
 )
