@@ -17,7 +17,7 @@ final _eventsProvider = FutureProvider.autoDispose<List<dynamic>>((ref) async {
   }
 });
 
-/// 可复用的日程编辑弹窗
+/// 可复用的日程编辑弹窗（支持所有字段）
 Future<Map<String, dynamic>?> showEventEditDialog(
   BuildContext context,
   Map<String, dynamic>? event,
@@ -29,6 +29,12 @@ Future<Map<String, dynamic>?> showEventEditDialog(
   DateTime endDate = DateTime.now().add(const Duration(hours: 1));
   TimeOfDay startTime = TimeOfDay.fromDateTime(DateTime.now());
   TimeOfDay endTime = TimeOfDay.fromDateTime(DateTime.now().add(const Duration(hours: 1)));
+  String eventType = (event?['event_type'] as String?) ?? 'event';
+  bool isAllDay = (event?['is_all_day'] as bool?) ?? false;
+  bool isPreparation = (event?['is_preparation'] as bool?) ?? false;
+  final prepMinutesCtrl = TextEditingController(
+    text: (event?['preparation_minutes'] as int?)?.toString() ?? '',
+  );
 
   if (isEdit) {
     final startStr = event['start_time'] as String?;
@@ -87,10 +93,32 @@ Future<Map<String, dynamic>?> showEventEditDialog(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: '标题', border: OutlineInputBorder())),
+                TextField(
+                  controller: titleCtrl,
+                  decoration: const InputDecoration(labelText: '标题', border: OutlineInputBorder()),
+                ),
                 const SizedBox(height: 12),
-                TextField(controller: descCtrl, decoration: const InputDecoration(labelText: '描述', border: OutlineInputBorder()), maxLines: 2),
+                TextField(
+                  controller: descCtrl,
+                  decoration: const InputDecoration(labelText: '描述', border: OutlineInputBorder()),
+                  maxLines: 2,
+                ),
                 const SizedBox(height: 12),
+                // 日程类型
+                DropdownButtonFormField<String>(
+                  value: eventType,
+                  decoration: const InputDecoration(labelText: '类型', border: OutlineInputBorder()),
+                  items: const [
+                    DropdownMenuItem(value: 'event', child: Text('日程')),
+                    DropdownMenuItem(value: 'class', child: Text('课程')),
+                    DropdownMenuItem(value: 'exam', child: Text('考试')),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) setState(() => eventType = v);
+                  },
+                ),
+                const SizedBox(height: 12),
+                // 开始日期
                 InkWell(
                   onTap: () => pickDate(true),
                   child: InputDecorator(
@@ -99,14 +127,17 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   ),
                 ),
                 const SizedBox(height: 8),
-                InkWell(
-                  onTap: () => pickTime(true),
-                  child: InputDecorator(
-                    decoration: const InputDecoration(labelText: '开始时间', border: OutlineInputBorder()),
-                    child: Text(startTime.format(ctx)),
+                // 开始时间（非全天时才显示）
+                if (!isAllDay)
+                  InkWell(
+                    onTap: () => pickTime(true),
+                    child: InputDecorator(
+                      decoration: const InputDecoration(labelText: '开始时间', border: OutlineInputBorder()),
+                      child: Text(startTime.format(ctx)),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 12),
+                if (!isAllDay) const SizedBox(height: 12),
+                // 结束日期
                 InkWell(
                   onTap: () => pickDate(false),
                   child: InputDecorator(
@@ -115,12 +146,42 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   ),
                 ),
                 const SizedBox(height: 8),
-                InkWell(
-                  onTap: () => pickTime(false),
-                  child: InputDecorator(
-                    decoration: const InputDecoration(labelText: '结束时间', border: OutlineInputBorder()),
-                    child: Text(endTime.format(ctx)),
+                // 结束时间（非全天时才显示）
+                if (!isAllDay)
+                  InkWell(
+                    onTap: () => pickTime(false),
+                    child: InputDecorator(
+                      decoration: const InputDecoration(labelText: '结束时间', border: OutlineInputBorder()),
+                      child: Text(endTime.format(ctx)),
+                    ),
                   ),
+                if (!isAllDay) const SizedBox(height: 12),
+                // 全天开关
+                SwitchListTile(
+                  title: const Text('全天'),
+                  value: isAllDay,
+                  onChanged: (v) => setState(() => isAllDay = v),
+                ),
+                const SizedBox(height: 8),
+                // 准备日程标记
+                SwitchListTile(
+                  title: const Text('这是一段准备时间'),
+                  subtitle: isPreparation
+                      ? const Text('用于为某个日程或待办做准备')
+                      : null,
+                  value: isPreparation,
+                  onChanged: (v) => setState(() => isPreparation = v),
+                ),
+                const SizedBox(height: 12),
+                // 准备时间（分钟）
+                TextField(
+                  controller: prepMinutesCtrl,
+                  decoration: const InputDecoration(
+                    labelText: '准备时间（分钟）',
+                    hintText: '如：30',
+                    border: OutlineInputBorder(),
+                  ),
+                  keyboardType: TextInputType.number,
                 ),
               ],
             ),
@@ -130,15 +191,25 @@ Future<Map<String, dynamic>?> showEventEditDialog(
             FilledButton(
               onPressed: () {
                 if (titleCtrl.text.isEmpty) return;
-                final finalStart = DateTime(startDate.year, startDate.month, startDate.day, startTime.hour, startTime.minute);
-                final finalEnd = DateTime(endDate.year, endDate.month, endDate.day, endTime.hour, endTime.minute);
-                Navigator.pop(ctx, {
+                final data = <String, dynamic>{
                   'title': titleCtrl.text,
                   'description': descCtrl.text,
-                  'start_time': finalStart.toIso8601String(),
-                  'end_time': finalEnd.toIso8601String(),
+                  'event_type': eventType,
+                  'is_all_day': isAllDay,
+                  'is_preparation': isPreparation,
                   'type': 'event',
-                });
+                };
+                if (!isAllDay) {
+                  final finalStart = DateTime(startDate.year, startDate.month, startDate.day, startTime.hour, startTime.minute);
+                  final finalEnd = DateTime(endDate.year, endDate.month, endDate.day, endTime.hour, endTime.minute);
+                  data['start_time'] = finalStart.toIso8601String();
+                  data['end_time'] = finalEnd.toIso8601String();
+                }
+                final prepMin = int.tryParse(prepMinutesCtrl.text);
+                if (prepMin != null && prepMin > 0) {
+                  data['preparation_minutes'] = prepMin;
+                }
+                Navigator.pop(ctx, data);
               },
               child: Text(isEdit ? '保存' : '添加'),
             ),
@@ -149,7 +220,7 @@ Future<Map<String, dynamic>?> showEventEditDialog(
   );
 }
 
-/// 可复用的待办编辑弹窗
+/// 可复用的待办编辑弹窗（支持所有字段）
 Future<Map<String, dynamic>?> showTaskEditDialog(
   BuildContext context,
   Map<String, dynamic>? task,
@@ -161,6 +232,9 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
   TimeOfDay deadlineTime = const TimeOfDay(hour: 23, minute: 59);
   bool isImportant = (task?['is_important'] as bool?) ?? false;
   String status = (task?['status'] as String?) ?? 'todo';
+  final prepMinutesCtrl = TextEditingController(
+    text: (task?['preparation_minutes'] as int?)?.toString() ?? '',
+  );
 
   if (isEdit) {
     final deadlineStr = task['deadline'] as String?;
@@ -206,10 +280,18 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: '标题', border: OutlineInputBorder())),
+                TextField(
+                  controller: titleCtrl,
+                  decoration: const InputDecoration(labelText: '标题', border: OutlineInputBorder()),
+                ),
                 const SizedBox(height: 12),
-                TextField(controller: descCtrl, decoration: const InputDecoration(labelText: '描述', border: OutlineInputBorder()), maxLines: 2),
+                TextField(
+                  controller: descCtrl,
+                  decoration: const InputDecoration(labelText: '描述', border: OutlineInputBorder()),
+                  maxLines: 2,
+                ),
                 const SizedBox(height: 12),
+                // 截止日期
                 InkWell(
                   onTap: pickDate,
                   child: InputDecorator(
@@ -218,6 +300,7 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
                   ),
                 ),
                 const SizedBox(height: 8),
+                // 截止时间
                 InkWell(
                   onTap: pickTime,
                   child: InputDecorator(
@@ -226,6 +309,7 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
                   ),
                 ),
                 const SizedBox(height: 12),
+                // 重要标记
                 SwitchListTile(
                   title: const Text('重要'),
                   value: isImportant,
@@ -233,6 +317,7 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
                   secondary: Icon(isImportant ? Icons.star : Icons.star_border, color: isImportant ? Colors.amber : null),
                 ),
                 const SizedBox(height: 8),
+                // 状态
                 DropdownButtonFormField<String>(
                   value: status,
                   decoration: const InputDecoration(labelText: '状态', border: OutlineInputBorder()),
@@ -246,6 +331,17 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
                     if (v != null) setState(() => status = v);
                   },
                 ),
+                const SizedBox(height: 12),
+                // 准备时间（分钟）
+                TextField(
+                  controller: prepMinutesCtrl,
+                  decoration: const InputDecoration(
+                    labelText: '准备时间（分钟）',
+                    hintText: '如：30',
+                    border: OutlineInputBorder(),
+                  ),
+                  keyboardType: TextInputType.number,
+                ),
               ],
             ),
           ),
@@ -255,14 +351,19 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
               onPressed: () {
                 if (titleCtrl.text.isEmpty) return;
                 final finalDeadline = DateTime(deadlineDate.year, deadlineDate.month, deadlineDate.day, deadlineTime.hour, deadlineTime.minute);
-                Navigator.pop(ctx, {
+                final data = <String, dynamic>{
                   'title': titleCtrl.text,
                   'description': descCtrl.text,
                   'deadline': finalDeadline.toIso8601String(),
                   'is_important': isImportant,
                   'status': status,
                   'type': 'task',
-                });
+                };
+                final prepMin = int.tryParse(prepMinutesCtrl.text);
+                if (prepMin != null && prepMin > 0) {
+                  data['preparation_minutes'] = prepMin;
+                }
+                Navigator.pop(ctx, data);
               },
               child: Text(isEdit ? '保存' : '添加'),
             ),
@@ -352,22 +453,30 @@ class _EventsPageState extends ConsumerState<EventsPage> {
         await api.updateEvent(event['id'], {
           'title': result['title'],
           'description': result['description'],
-          'start_time': result['start_time'],
-          'end_time': result['end_time'],
+          'event_type': result['event_type'],
+          'is_all_day': result['is_all_day'],
+          if (result['start_time'] != null) 'start_time': result['start_time'],
+          if (result['end_time'] != null) 'end_time': result['end_time'],
+          'is_preparation': result['is_preparation'],
+          if (result['preparation_minutes'] != null) 'preparation_minutes': result['preparation_minutes'],
         });
       } else {
         await api.createEvent({
           'title': result['title'],
           'description': result['description'],
-          'start_time': result['start_time'],
-          'end_time': result['end_time'],
+          'event_type': result['event_type'],
+          'is_all_day': result['is_all_day'],
+          if (result['start_time'] != null) 'start_time': result['start_time'],
+          if (result['end_time'] != null) 'end_time': result['end_time'],
+          'is_preparation': result['is_preparation'],
+          if (result['preparation_minutes'] != null) 'preparation_minutes': result['preparation_minutes'],
         });
       }
       ref.invalidate(_eventsProvider);
-    } catch (_) {
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('操作失败，请检查网络连接')),
+          SnackBar(content: Text('操作失败: $e')),
         );
       }
     }
@@ -443,7 +552,6 @@ class _EventsPageState extends ConsumerState<EventsPage> {
 
           return Column(
             children: [
-              // 月历 — 用 SizedBox 固定高度防止溢出
               SizedBox(
                 height: 320,
                 child: TableCalendar(
@@ -464,10 +572,7 @@ class _EventsPageState extends ConsumerState<EventsPage> {
                   eventLoader: (day) {
                     return groupedEvents[DateTime(day.year, day.month, day.day)] ?? [];
                   },
-                  headerStyle: const HeaderStyle(
-                    formatButtonVisible: false,
-                    titleCentered: true,
-                  ),
+                  headerStyle: const HeaderStyle(formatButtonVisible: false, titleCentered: true),
                   calendarStyle: CalendarStyle(
                     todayDecoration: BoxDecoration(
                       color: theme.colorScheme.primary.withValues(alpha: 0.5),
@@ -505,10 +610,7 @@ class _EventsPageState extends ConsumerState<EventsPage> {
               Expanded(
                 child: dayEvents.isEmpty
                     ? Center(
-                        child: Text(
-                          '当天无日程',
-                          style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-                        ),
+                        child: Text('当天无日程', style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
                       )
                     : RefreshIndicator(
                         onRefresh: () async => ref.invalidate(_eventsProvider),

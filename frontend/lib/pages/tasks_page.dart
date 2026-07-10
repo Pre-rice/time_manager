@@ -130,10 +130,14 @@ class TasksPage extends ConsumerWidget {
   Future<void> _showEditDialog(BuildContext context, WidgetRef ref, Map<String, dynamic>? task) async {
     final isEdit = task != null;
     final titleCtrl = TextEditingController(text: task?['title'] ?? '');
+    final descCtrl = TextEditingController(text: task?['description'] ?? '');
     DateTime? deadlineDate;
     TimeOfDay? deadlineTime;
     bool isImportant = (task?['is_important'] as bool?) ?? false;
     String status = (task?['status'] as String?) ?? 'todo';
+    final prepMinutesCtrl = TextEditingController(
+      text: (task?['preparation_minutes'] as int?)?.toString() ?? '',
+    );
 
     final deadlineStr = task?['deadline'] as String?;
     if (deadlineStr != null && deadlineStr.length >= 16) {
@@ -174,6 +178,8 @@ class TasksPage extends ConsumerWidget {
                 children: [
                   TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: '标题', border: OutlineInputBorder())),
                   const SizedBox(height: 12),
+                  TextField(controller: descCtrl, decoration: const InputDecoration(labelText: '描述', border: OutlineInputBorder()), maxLines: 2),
+                  const SizedBox(height: 12),
                   InkWell(
                     onTap: pickDeadlineDate,
                     child: InputDecorator(
@@ -210,6 +216,12 @@ class TasksPage extends ConsumerWidget {
                       if (v != null) setState(() => status = v);
                     },
                   ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: prepMinutesCtrl,
+                    decoration: const InputDecoration(labelText: '准备时间（分钟）', hintText: '如：30', border: OutlineInputBorder()),
+                    keyboardType: TextInputType.number,
+                  ),
                 ],
               ),
             ),
@@ -222,9 +234,14 @@ class TasksPage extends ConsumerWidget {
                     final api = ref.read(apiServiceProvider);
                     final data = <String, dynamic>{
                       'title': titleCtrl.text,
+                      'description': descCtrl.text,
                       'is_important': isImportant,
                       'status': status,
                     };
+                    final prepMin = int.tryParse(prepMinutesCtrl.text);
+                    if (prepMin != null && prepMin > 0) {
+                      data['preparation_minutes'] = prepMin;
+                    }
                     if (deadlineDate != null && deadlineTime != null) {
                       data['deadline'] = DateTime(
                         deadlineDate!.year, deadlineDate!.month, deadlineDate!.day,
