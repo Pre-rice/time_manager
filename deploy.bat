@@ -33,9 +33,9 @@ timeout /t 3 /nobreak >nul
 :: ===== 步骤 4: 启动前端开发服务器 =====
 echo [4/4] 启动前端开发服务器（支持热重载）...
 echo   首次编译约 20-30 秒，之后改代码刷浏览器即可
-start "FlutterDev" /B /D e:\编程\time_manager\frontend D:\Flutter\bin\flutter.bat run -d web-server --web-port 8080
+start "FlutterDev" /D e:\编程\time_manager\frontend D:\Flutter\bin\flutter.bat run -d web-server --web-port 8080
 echo   -- 前端开发服务器已启动 (http://localhost:8080)
-echo   提示: flutter 日志在后台运行，按 Ctrl+C 可关闭
+echo   注意: 请在新打开的窗口中查看编译进度
 echo.
 
 echo ========================================
