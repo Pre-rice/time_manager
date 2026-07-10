@@ -22,6 +22,7 @@ from app.services.fudan_parser import (
     period_to_time,
     parse_schedule_from_draw_data,
     parse_print_data_schedules,
+    parse_all_semester_dates,
     compute_semester_start,
     build_rrule,
     unit_to_time,
@@ -34,7 +35,7 @@ ID_HOST = "id.fudan.edu.cn"
 COURSE_TABLE_URL = "https://fdjwgl.fudan.edu.cn/student/for-std/course-table"
 EXAM_ARRANGE_URL = "https://fdjwgl.fudan.edu.cn/student/for-std/exam-arrange/"
 ELEARNING_URL = "https://elearning.fudan.edu.cn/dash"
-PRINT_DATA_URL = "https://fdjwgl.fudan.edu.cn/student/for-std/course-table/semester/{sem_id}/print-data"
+PRINT_DATA_URL = "https://fdjwgl.fudan.edu.cn/student/for-std/course-table/semester/{sem_id}/print-data?semesterId={sem_id}&hasExperiment=true"
 
 
 def _rsa_encrypt(password: str, public_key_b64: str) -> str:
@@ -296,12 +297,28 @@ async def _fudan_authenticate(
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(resp.text, "html.parser")
     
+    # 检查是否有 logon 表单（自动提交的 SSO 跳转）
     logon_form = soup.find(id="logon")
     ticket_input = soup.find(id="ticket")
     
     if not logon_form or not ticket_input:
-        # 尝试其他方式
-        logger.warning("Could not find logon form or ticket input")
+        # 尝试 JS 自动跳转
+        import re
+        # 检查 page onload 中的 locationValue
+        script_text = resp.text
+        ticket_match = re.search(r'ticket=([^"&\s]+)', script_text)
+        refer_match = re.search(r'refer=([^&\s]+)', script_text)
+        if ticket_match and refer_match:
+            ticket_value = ticket_match.group(1)
+            refer = refer_match.group(1)
+            ticket_url = f"https://fdjwgl.fudan.edu.cn/student/sso/login?refer={refer}&ticket={ticket_value}"
+            logger.info(f"Step 6 (script): GET {ticket_url[:100]}")
+            resp = await client.get(ticket_url, follow_redirects=True)
+            logger.info(f"Step 6 final: {resp.status_code} -> {resp.url}, length={len(resp.text)}")
+            logger.info("Authentication completed successfully (via script)")
+            return True
+        
+        logger.warning("Could not find logon form or ticket")
         logger.info(f"Page sample: {resp.text[:500]}")
         return False
     
@@ -318,7 +335,8 @@ async def _fudan_authenticate(
         ticket_url = f"{submit_action}?ticket={ticket_value}"
     
     logger.info(f"Step 6: GET ticket URL: {ticket_url[:100]}")
-    await client.get(ticket_url, follow_redirects=True)
+    resp = await client.get(ticket_url, follow_redirects=True)
+    logger.info(f"Step 6 final: {resp.status_code} -> {resp.url}, length={len(resp.text)}, has course_data={'select' in resp.text[:1000].lower()}")
     logger.info("Authentication completed successfully")
     
     return True
@@ -717,9 +735,14 @@ def _parse_semester_start_date(page_html: str) -> str | None:
 
 async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list, list, str]:
     """
-    执行 SSO 重连并获取所有数据
-    返回: (lessons, html_exams, lesson_exams, schedules, semester_start_date)
-    schedules 包含真正的排课数据: {title, weekday, weeks, start_unit, end_unit, location, teacher, code}
+    执行 SSO 重连并获取所有学期的课表数据。
+    
+    返回: (lessons, html_exams, lesson_exams, all_schedules, default_start_date)
+    
+    新特性：
+    - 循环遍历页面中所有学期，对每个学期调用 print-data API
+    - 每个学期使用正确的 startDate
+    - 合并所有学期的排课数据返回
     """
     import re, json
     
@@ -727,59 +750,57 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
     sso_ok = await _ensure_sso_session(client, COURSE_TABLE_URL)
     logger.info(f"SSO result: {sso_ok}")
     
-    # Step 2: 访问课表页面一次，提取 semesterId、studentId、personId 和学期名称
+    # Step 2: 访问课表页面，提取所有学期信息
     try:
         resp = await client.get(COURSE_TABLE_URL, follow_redirects=True)
         logger.info(f"Course page response: {resp.status_code}, size={len(resp.text)}, url={resp.url}")
     except Exception as e:
         logger.warning(f"Failed to load course page: {type(e).__name__}: {e}")
-        # 如果课表页面都无法访问，直接返回空结果
         return [], [], [], [], ""
+    
     logger.info(f"Course page size: {len(resp.text)}, logon={'logon' in resp.text[:300].lower()}")
     
-    # 从页面 JS 中解析学期开始日期（精确到具体日期）
-    semester_start_date = _parse_semester_start_date(resp.text)
-    logger.info(f"Semester start date from page: {semester_start_date}")
+    # 解析所有学期的 startDate
+    all_semester_dates = parse_all_semester_dates(resp.text)
+    logger.info(f"Parsed semester dates: {all_semester_dates}")
     
-    # 从 select option 中提取学期ID（格式 <option value="527">2026-2027学年1学期</option>）
+    # 从 select option 中提取学期ID
     sem_options = re.findall(r'<option\s+value="(\d+)"[^>]*>([^<]+)</option>', resp.text)
     sid_match = re.search(r'studentIds\s*=\s*\[(\d+)\]', resp.text)
-    pid_match = re.search(r'personId\s*=\s*(\d+)', resp.text)
     
-    semester_id = None
-    semester_name = ""
-    student_id = ""
-    person_id = ""
+    student_id = sid_match.group(1) if sid_match else ""
+    if not student_id:
+        logger.error("Cannot find studentId")
+        return [], [], [], [], ""
     
-    # 选第一个非暑期的学期
-    if sem_options:
-        for val, name in sem_options:
-            if '暑' not in name:
-                semester_id = int(val)
-                semester_name = name
-                break
-        if not semester_id and sem_options:
-            semester_id = int(sem_options[0][0])
-            semester_name = sem_options[0][1]
-        logger.info(f"Found semester: id={semester_id}, name={semester_name}")
+    # 构建学期列表: (sem_id, sem_name)
+    semester_list = []
+    seen_ids = set()
+    for val, name in sem_options:
+        sem_id = int(val)
+        if sem_id not in seen_ids:
+            seen_ids.add(sem_id)
+            semester_list.append((sem_id, name))
     
-    if sid_match:
-        student_id = sid_match.group(1)
-        logger.info(f"Found studentId: {student_id}")
-    if pid_match:
-        person_id = pid_match.group(1)
-        logger.info(f"Found personId: {person_id}")
+    logger.info(f"Found {len(semester_list)} semesters: {[s[0] for s in semester_list]}")
     
-    # Step 3: 调用 JSON API 获取课程列表和考试信息
-    lessons = []
-    lesson_exams = []
-    raw_lessons = []
-    teacher_map = {}
+    # Step 3: 调用 JSON API 获取课程信息（只用当前学期，其他学期课程可能不同）
+    # 注意：getLesson API 返回的是当前 semester_id 的课程，做基础列表用途
+    lessons_list = []
+    lesson_exams_list = []
+    html_exams_list = []
+    all_schedules = []
+    default_start_date = ""
     
-    if semester_id and student_id:
+    # 为每个学期获取课程列表和排课数据
+    for sem_id, sem_name in semester_list:
+        # 3a: 调用 getLesson API
         lesson_url = f"{COURSE_TABLE_URL}/getLesson"
-        jresp = await client.get(lesson_url, params={"semesterId": semester_id, "studentId": student_id})
-        logger.info(f"getLesson API: {jresp.status_code}, size={len(jresp.text)}")
+        jresp = await client.get(lesson_url, params={"semesterId": sem_id, "studentId": student_id})
+        logger.info(f"getLesson API (sem={sem_id}): {jresp.status_code}, size={len(jresp.text)}")
+        
+        raw_lessons = []
+        teacher_map = {}
         
         if jresp.status_code == 200:
             data = jresp.json()
@@ -789,7 +810,7 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
             for l in raw_lessons:
                 course = l.get("course", {})
                 lid = str(l.get("id", ""))
-                lessons.append({
+                lessons_list.append({
                     "title": course.get("nameZh", ""),
                     "code": l.get("code", ""),
                     "teacher": teacher_map.get(lid, ""),
@@ -798,57 +819,71 @@ async def _do_sso_and_fetch(client: httpx.AsyncClient) -> tuple[list, list, list
                 es = l.get("examStartDate", "")
                 ee = l.get("examEndDate", "")
                 if es and ee:
-                    lesson_exams.append({
+                    lesson_exams_list.append({
                         "title": course.get("nameZh", ""),
                         "start": es,
                         "end": ee,
                         "exam_mode": l.get("examMode", {}).get("nameZh", ""),
                     })
             
-            logger.info(f"Fetched {len(lessons)} lessons, {len(lesson_exams)} exams from JSON API")
-    
-    # Step 4: 获取考试 HTML
-    html_exams = await _fetch_exams(client)
-    
-    # Step 5: 通过 print-data API 获取真正的排课数据
-    schedules = []
-    if semester_id and student_id:
-        # 构建 lesson_map
-        lesson_map = {}
-        for l in raw_lessons:
-            lid = str(l.get("id", ""))
-            course = l.get("course", {})
-            lesson_map[lid] = {
-                "title": course.get("nameZh", ""),
-                "code": l.get("code", ""),
-                "teacher": teacher_map.get(lid, ""),
-            }
+            logger.info(f"Fetched {len(raw_lessons)} lessons for sem {sem_id}")
         
-        try:
-            print_data_url = PRINT_DATA_URL.replace("{sem_id}", str(semester_id))
-            logger.info(f"Calling print-data API: {print_data_url}")
-            print_resp = await client.get(print_data_url, follow_redirects=True)
+        # 3b: 获取该学期的学期开始日期
+        sem_start_date = all_semester_dates.get(sem_id, "")
+        if not sem_start_date:
+            logger.error(f"Semester {sem_id} ({sem_name}): NO valid start date found, SKIPPING this semester")
+            # 跳过没有正确日期的学期，绝不使用估算日期
+            continue
+        logger.info(f"Semester {sem_id} ({sem_name}) start date (周一): {sem_start_date}")
+        
+        if not default_start_date:
+            default_start_date = sem_start_date
+        
+        # 3c: 通过 print-data API 获取排课数据
+        if raw_lessons and student_id:
+            # 构建该学期的 lesson_map
+            lesson_map = {}
+            for l in raw_lessons:
+                lid = str(l.get("id", ""))
+                course = l.get("course", {})
+                lesson_map[lid] = {
+                    "title": course.get("nameZh", ""),
+                    "code": l.get("code", ""),
+                    "teacher": teacher_map.get(lid, ""),
+                }
             
-            if print_resp.status_code == 200 and len(print_resp.text) > 20:
-                print_data = print_resp.json()
-                schedules = parse_print_data_schedules(print_data, lesson_map)
-                logger.info(f"Parsed {len(schedules)} schedule entries from print-data API")
-                # 注入 semester_name 和 semester_start_date
-                for s in schedules:
-                    s["semester_name"] = semester_name
-                    if semester_start_date:
-                        s["semester_start_date"] = semester_start_date
-            else:
-                logger.warning(f"Print-data API returned {print_resp.status_code}")
-        except Exception as e:
-            logger.warning(f"Print-data API failed: {type(e).__name__}: {e}")
+            try:
+                print_data_url = PRINT_DATA_URL.replace("{sem_id}", str(sem_id))
+                logger.info(f"Calling print-data API (sem={sem_id}): {print_data_url}")
+                print_resp = await client.get(print_data_url, follow_redirects=True)
+                
+                if print_resp.status_code == 200 and len(print_resp.text) > 20:
+                    print_data = print_resp.json()
+                    sem_schedules = parse_print_data_schedules(print_data, lesson_map)
+                    logger.info(f"Parsed {len(sem_schedules)} schedule entries for sem {sem_id}")
+                    
+                    # 注入 semester_name 和 semester_start_date
+                    for s in sem_schedules:
+                        s["semester_name"] = sem_name
+                        s["semester_start_date"] = sem_start_date
+                    
+                    all_schedules.extend(sem_schedules)
+                else:
+                    logger.warning(f"Print-data API returned {print_resp.status_code} for sem {sem_id}")
+            except Exception as e:
+                logger.warning(f"Print-data API failed for sem {sem_id}: {type(e).__name__}: {e}")
     
-    # 如果 print-data API 没拿到数据，fallback 到旧方式
-    if not schedules:
-        schedules = lessons
-        logger.info(f"Falling back to simple lesson list ({len(schedules)} items)")
+    # Step 4: 获取考试 HTML（只需一次）
+    try:
+        html_exams_list = await _fetch_exams(client)
+        logger.info(f"Fetched {len(html_exams_list)} HTML exams")
+    except Exception as e:
+        logger.warning(f"Failed to fetch HTML exams: {e}")
     
-    return lessons, html_exams, lesson_exams, schedules, semester_start_date or ""
+    logger.info(f"Total: lessons={len(lessons_list)}, lesson_exams={len(lesson_exams_list)}, "
+                f"html_exams={len(html_exams_list)}, schedules={len(all_schedules)}")
+    
+    return lessons_list, html_exams_list, lesson_exams_list, all_schedules, default_start_date
 
 
 async def sync_fudan_data(db: AsyncSession, user_id: uuid.UUID) -> dict:
@@ -857,9 +892,8 @@ async def sync_fudan_data(db: AsyncSession, user_id: uuid.UUID) -> dict:
     if not credential:
         return {'success': False, 'message': '未连接复旦教务，请先在设置中配置'}
 
-    client = await _get_client(credential)
-    if not client:
-        return {'success': False, 'message': '登录凭证已过期，请重新连接'}
+    # 用保存的密码重新 CAS 认证，获取新鲜 ticket + cookie
+    password = decrypt_api_key(credential.encrypted_password)
 
     result = {
         'events_created': 0,
@@ -869,11 +903,25 @@ async def sync_fudan_data(db: AsyncSession, user_id: uuid.UUID) -> dict:
         'errors': [],
     }
 
-    try:
-        # 执行 SSO 重连并获取数据
-        lessons, html_exams, lesson_exams, schedules, semester_start_date = await _do_sso_and_fetch(client)
-        
-        # 更新 cookies (可能 SSO 重连产生了新 cookie)
+    async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        try:
+            login_ok = await _fudan_authenticate(
+                client, credential.student_id, password, COURSE_TABLE_URL
+            )
+            if not login_ok:
+                return {'success': False, 'message': '复旦认证失败，请重新连接'}
+        except Exception as e:
+            logger.exception("Re-auth error in sync")
+            return {'success': False, 'message': f'复旦认证失败: {str(e)}'}
+
+        # 访问课表页面完成 SSO 跳转（建立 fdjwgl session）
+        try:
+            sso_resp = await client.get(COURSE_TABLE_URL, follow_redirects=True)
+            logger.info(f"SSO after auth: {sso_resp.status_code} -> {sso_resp.url}, size={len(sso_resp.text)}, logon={'logon' in sso_resp.text[:300].lower()}")
+        except Exception as e:
+            logger.warning(f"SSO after auth failed: {e}")
+
+        # 更新保存的 cookies
         try:
             new_cookies = {}
             for cookie in client.cookies.jar:
@@ -886,55 +934,56 @@ async def sync_fudan_data(db: AsyncSession, user_id: uuid.UUID) -> dict:
                 new_cookies[domain][path][cookie.name] = cookie.value
             if new_cookies:
                 credential.cookies = encrypt_api_key(json.dumps(new_cookies))
-                logger.info(f"Updated cookies for domains: {list(new_cookies.keys())}")
+                logger.info(f"Saved refreshed cookies: {list(new_cookies.keys())}")
         except Exception as e:
-            logger.warning(f"Failed to update cookies: {e}")
+            logger.warning(f"Failed to save cookies: {e}")
 
-        logger.info(f"Got lessons={len(lessons)}, html_exams={len(html_exams)}, lesson_exams={len(lesson_exams)}, schedules={len(schedules)}")
+        # 抓取数据（同一个 client）
+        lessons, html_exams, lesson_exams, schedules, semester_start_date = await _do_sso_and_fetch(client)
 
-        # 导入课程信息 → 日程
-        for schedule in schedules:
-            try:
-                await _upsert_course_event(db, user_id, schedule)
+    logger.info(f"Got: lessons={len(lessons)}, html_exams={len(html_exams)}, lesson_exams={len(lesson_exams)}, schedules={len(schedules)}")
+
+    # 导入课程信息 → 日程
+    for schedule in schedules:
+        try:
+            created = await _upsert_course_event(db, user_id, schedule)
+            if created:
                 result['events_created'] += 1
-            except Exception as e:
-                result['errors'].append(f"课程导入失败: {schedule.get('title', '未知')} - {str(e)}")
+        except Exception as e:
+            result['errors'].append(f"课程导入失败: {schedule.get('title', '未知')} - {str(e)}")
 
-        # 导入考试信息（从 getLesson API 中提取）
-        for exam in lesson_exams:
-            try:
-                record = {
-                    "title": exam["title"],
-                    "date": exam["start"][:10],
-                    "time_range": f"{exam['start'][11:16]}-{exam['end'][11:16]}",
-                    "location": exam.get("exam_mode", ""),
-                }
+    # 导入考试信息（从 getLesson API 中提取）
+    for exam in lesson_exams:
+        try:
+            record = {
+                "title": exam["title"],
+                "date": exam["start"][:10],
+                "time_range": f"{exam['start'][11:16]}-{exam['end'][11:16]}",
+                "location": exam.get("exam_mode", ""),
+            }
+            await _upsert_exam_event(db, user_id, record)
+            result['events_created'] += 1
+        except Exception as e:
+            result['errors'].append(f"考试导入失败: {exam.get('title', '未知')} - {str(e)}")
+
+    # 导入 HTML 解析的考试
+    import re as _re_import
+    for exam in html_exams:
+        try:
+            record = {"title": exam["title"], "time_text": exam.get("time_text", ""), "location": exam.get("location", "")}
+            date_match = _re_import.search(r'(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})', exam.get("time_text", ""))
+            time_match = _re_import.search(r'(\d{2}:\d{2})~(\d{2}:\d{2})', exam.get("time_text", ""))
+            if date_match:
+                date_str = date_match.group(1).replace("/", "-").replace(".", "-")
+                if time_match:
+                    record["date"] = date_str
+                    record["time_range"] = f"{time_match.group(1)}-{time_match.group(2)}"
+                else:
+                    record["date"] = date_str
                 await _upsert_exam_event(db, user_id, record)
                 result['events_created'] += 1
-            except Exception as e:
-                result['errors'].append(f"考试导入失败: {exam.get('title', '未知')} - {str(e)}")
-
-        # 导入 HTML 解析的考试
-        import re as _re_import
-        for exam in html_exams:
-            try:
-                record = {"title": exam["title"], "time_text": exam.get("time_text", ""), "location": exam.get("location", "")}
-                date_match = _re_import.search(r'(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})', exam.get("time_text", ""))
-                time_match = _re_import.search(r'(\d{2}:\d{2})~(\d{2}:\d{2})', exam.get("time_text", ""))
-                if date_match:
-                    date_str = date_match.group(1).replace("/", "-").replace(".", "-")
-                    if time_match:
-                        record["date"] = date_str
-                        record["time_range"] = f"{time_match.group(1)}-{time_match.group(2)}"
-                    else:
-                        record["date"] = date_str
-                    await _upsert_exam_event(db, user_id, record)
-                    result['events_created'] += 1
-            except Exception as e:
-                result['errors'].append(f"考试导入失败: {exam.get('title', '未知')} - {str(e)}")
-
-    finally:
-        await client.aclose()
+        except Exception as e:
+            result['errors'].append(f"考试导入失败: {exam.get('title', '未知')} - {str(e)}")
 
     credential.last_sync_at = datetime.now(timezone.utc)
     logger.info(f"Sync completed: {result['events_created']} events, {result['tasks_created']} tasks")
@@ -947,7 +996,7 @@ async def sync_fudan_data(db: AsyncSession, user_id: uuid.UUID) -> dict:
     }
 
 
-async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dict):
+async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dict) -> bool:
     """
     课程 → 日程
     
@@ -960,7 +1009,7 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
     """
     title = course.get('title', '')
     if not title:
-        return
+        return False
 
     # 检测是哪种格式
     weekday_raw = course.get('weekday')
@@ -995,6 +1044,11 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
     if weekday:
         description_parts.append(f"每周{get_weekday_name(weekday)}")
     
+    # 加入学期信息，用于区分不同学期同名课程
+    semester_name = course.get('semester_name', '')
+    if semester_name:
+        description_parts.append(f"学期：{semester_name}")
+    
     # 使用 title + weekday + start_unit 作为唯一标识
     existing_query = await db.execute(
         select(Event).where(
@@ -1019,12 +1073,11 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
     if weekday and weeks:
         # 有排课信息 - 创建带时间的事件
         try:
-            # 优先使用从页面解析的学期开始日期
+            # 必须使用从页面解析的学期开始日期
             semester_start_date = course.get('semester_start_date', '')
             if not semester_start_date:
-                semester_name = course.get('semester_name', '')
-                computed = compute_semester_start(None, semester_name)
-                semester_start_date = computed if computed else "2026-09-01"
+                logger.error(f"SKIP {title}: no valid semester_start_date in course data")
+                return False
             
             first_week = weeks[0]
             
@@ -1068,6 +1121,7 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
                 )
                 db.add(event)
                 logger.info(f"Created class event: {title} weekday={weekday} start={first_start} rrule={rrule}")
+                return True
             else:
                 existing.description = ' | '.join(description_parts) if description_parts else None
                 existing.start_time = first_start
@@ -1101,8 +1155,11 @@ async def _upsert_course_event(db: AsyncSession, user_id: uuid.UUID, course: dic
                 is_all_day=False,
             )
             db.add(event)
+            return True
         else:
             existing.description = ' | '.join(description_parts) if description_parts else None
+    
+    return False
 
 
 def _weekday_to_rrule(weekday: int) -> str:

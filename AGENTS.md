@@ -185,9 +185,9 @@ authserver/login (获取 lck + entityId)
 
 1. ~~**排课数据未导入** — `draw-table-data` API 返回了 HTML~~ ✅ 已修复：参考 DanXi 源码改为使用 `print-data` API（2026-07-09）
 2. **`_get_client()` 缺少 `verify=False`** — 已修复（2026-07-09）
-3. **`semester_start` 硬编码** — 已修复，改用 `compute_semester_start()` 根据学期名称自动计算（2026-07-09）
+3. ~~**`semester_start` 硬编码** — 已修复，改用 `compute_semester_start()` 根据学期名称自动计算（2026-07-09）~~ ❌ 回退：`compute_semester_start()` 曾因年份取错导致错误日期（详见关键经验 #1）
 4. **Windows GBK 编码** — cmd 终端输出 Unicode 时报错，调试困难
-5. **Cookie 会过期** — SSO 每次 sync 时需要自动跟随 ticket 重连
+5. **Cookie 会过期** — `sync_fudan_data` 必须在同步开始前用保存密码重新 CAS 认证（2026-07-10 修复）
 6. **Docker 容器内 Python stdout 缓冲** — `docker exec` 运行 Python 时输出被缓冲吞掉，调试困难。解决：写入文件再用 `cat` 读取
 7. **`last_sync_at` 时区** — 后端存 UTC，前端直接显示 UTC 而非北京时间（需修复）
 8. **前端编辑弹窗无 RRULE 支持** — 编辑弹窗没展示重复规则（需修复）
@@ -249,6 +249,45 @@ authserver/login (获取 lck + entityId)
   - 返回结构包含 `studentTableVms[].activities[]`，每个 activity 有 courseName、weekday、startUnit、endUnit、weekIndexes（数组）、room、teachers 等字段
   - 使用 GET 请求，无需 POST body
 - 修复后 sync 成功导入 37 个日程（含完整的课程排课 + 考试）
+
+### 关键经验与设计决策（2026-07-10 记录）
+
+#### 经验 #1：学期起始日期绝不能静默 fallback
+**背景**：之前 `parse_all_semester_dates()` 解析不到页面数据时静默返回空 dict，导致 `_do_sso_and_fetch` 调用 `compute_semester_start()` 估算了错误的日期并导入数据库（如把 2026-03-02 算成 2025-02-24）。
+
+**决策**：
+1. `parse_all_semester_dates()` 如果彻底解析不到任何学期日期 → 返回空 dict + 日志 `FAILED`。**绝不做静默估算**
+2. `_do_sso_and_fetch()` 如果某学期 `start_date` 为空 → `logger.error()` + `continue`，跳过该学期
+3. `_upsert_course_event()` 如果 `semester_start_date` 为空 → `logger.error(f"SKIP {title}")` + `return False`
+
+**教训**：宁可错过数据，也不导入错误数据。
+
+#### 经验 #2：sync 时 Cookie 过期须重新 CAS 认证
+**背景**：之前 `sync_fudan_data` 只从数据库读保存的 cookie，但 cookie 几小时后会过期，导致访问课表页面时返回 `<!DOCTYPE html>`（logon 页），所有学期被跳过但 sync 仍报告 success。
+
+**决策**：`sync_fudan_data` 现在在抓取数据前用保存的密码执行完整 CAS 认证（`_fudan_authenticate`），再用同一个 httpx client 抓取数据，确保 cookie 是新鲜的。
+
+**注意**：认证成功后必须访问一次 `COURSE_TABLE_URL` 完成 SSO ticket 跳转，否则 fdjwgl 域没有 cookie。
+
+#### 经验 #3：print-data API 参数必须带 `?semesterId={}&hasExperiment=true`
+**背景**：初版 URL 只有路径参数 `/semester/{sem_id}/print-data`，缺少查询参数返回了错误数据。
+
+**修正**：`PRINT_DATA_URL = "https://.../semester/{sem_id}/print-data?semesterId={sem_id}&hasExperiment=true"`
+
+#### 经验 #4：同一课程同一时间槽多个 activity 必须合并
+**背景**：如"人工智能的编程基础"周五6-7节有 5 个 activity（不同教室），如果按条导入会创建 5 条重复日程。
+
+**修正**：`parse_print_data_schedules()` 按 `(lessonId, weekday, startUnit, endUnit)` 分组，合并周次取并集、教师去重、地点去重。
+
+#### 经验 #5：不同学期同名课程需要区分
+**背景**：如"数学分析BⅡ"同时出现在 2025-2026 学年 1 学期和 2 学期，`_upsert_course_event` 只按 title+weekday 匹配导致覆盖。
+
+**修正**：description 中加入 `学期：{semester_name}` 字段。但更好的做法是在 unique key 中加入 semester_name（待实现）。
+
+#### 经验 #6：`_upsert_course_event` 必须返回 bool
+**背景**：初版没有返回值，`sync_fudan_data` 中 `if created:` 永远为 False，导致 `events_created` 总是 0。
+
+**修正**：函数签名改为 `-> bool`，在 `db.add(event)` 后 `return True`，skip 时 `return False`，fallback 到创建无时间事件时 `return True`。
 
 ### Phase 6 🔜 实时与提醒
 ### Phase 7 🔜 界面美化

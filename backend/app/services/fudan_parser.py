@@ -366,12 +366,12 @@ def _parse_result_format(items: list, lesson_map: dict) -> list[dict]:
 def parse_print_data_schedules(print_data: dict, lesson_map: dict) -> list[dict]:
     """
     解析 print-data API 返回的课表排课数据。
+    按 (lessonId, weekday, startUnit, endUnit) 分组，
+    合并周次、地点、教师信息。
     
     weekday 映射规则：
-    - 复旦 print-data API 返回的 weekday 字段是 1-indexed，
-      但星期从周日开始: 1=周日, 2=周一, 3=周二, 4=周三, 5=周四, 6=周五, 7=周六
-    - 我们存储为 ISO weekday 格式: 1=周一, 7=周日
-    - 转换: 1→7(周日), 2→1(周一), 3→2(周二), 4→3(周三), ... 7→6(周六)
+    复旦教务系统 weekday: 1=周一, 2=周二, ..., 7=周日
+    → 直接使用
     
     Args:
         print_data: print-data API 返回的 JSON dict
@@ -380,16 +380,17 @@ def parse_print_data_schedules(print_data: dict, lesson_map: dict) -> list[dict]
     Returns:
         排课条目列表
         { title, code, teacher, weekday, weeks_str, start_unit, end_unit, location }
-        其中 weekday: 1=周一, 7=周日
     """
     import logging
     logger = logging.getLogger(__name__)
-    schedules = []
     
     student_tables = print_data.get("studentTableVms", [])
     if not student_tables:
         logger.warning("No studentTableVms in print-data response")
-        return schedules
+        return []
+    
+    # key: (lesson_id, weekday, start_unit, end_unit) → merged entry
+    group_map = {}
     
     for table in student_tables:
         activities = table.get("activities", [])
@@ -403,44 +404,100 @@ def parse_print_data_schedules(print_data: dict, lesson_map: dict) -> list[dict]
                 continue
             
             teacher_list = activity.get("teachers", [])
-            teacher = teacher_list[0] if teacher_list else lesson_info.get("teacher", "")
             code = activity.get("lessonCode", "") or lesson_info.get("code", "")
             
             weekday = activity.get("weekday")
             start_unit = activity.get("startUnit")
             end_unit = activity.get("endUnit")
             week_indexes = activity.get("weekIndexes", [])
-            room = activity.get("room", "")
             
             if weekday is None or start_unit is None:
                 continue
             
-            # 复旦教务系统 weekday: 1=周一, 2=周二, ..., 7=周日
-            # 直接使用，无需转换
             weekday = int(weekday)
+            start_unit = int(start_unit)
+            end_unit = int(end_unit)
             
-            if week_indexes:
-                week_indexes = sorted(week_indexes)
-                if len(week_indexes) > 1 and all(
-                    week_indexes[i] + 1 == week_indexes[i + 1] for i in range(len(week_indexes) - 1)
-                ):
-                    weeks_str = f"{week_indexes[0]}-{week_indexes[-1]}"
-                else:
-                    weeks_str = ",".join(str(w) for w in week_indexes)
+            # 构建完整地点：campus + building + room
+            campus = activity.get("campus", "") or ""
+            building = activity.get("building", "") or ""
+            room = activity.get("room", "") or ""
+            location_parts = []
+            if campus:
+                location_parts.append(campus)
+            if building:
+                # 去除 campus 前缀（如 "H邯郸校区" 已在 campus 中）
+                bname = building
+                if campus:
+                    bname = building.replace(campus, "").strip()
+                if bname:
+                    location_parts.append(bname)
+            if room:
+                location_parts.append(room)
+            location = " ".join(location_parts)
+            
+            # 按 key 分组
+            key = (lesson_id, weekday, start_unit, end_unit)
+            
+            if key in group_map:
+                existing = group_map[key]
+                # 合并周次
+                existing["_weeks_set"].update(week_indexes)
+                # 合并教师
+                for t in teacher_list:
+                    existing["_teachers_set"].add(t)
+                # 合并地点（去重）
+                if location:
+                    existing["_locations_set"].add(location)
             else:
-                weeks_str = ""
-            
-            schedules.append({
-                "title": title,
-                "code": code,
-                "teacher": teacher,
-                "weekday": int(weekday),
-                "weeks": weeks_str,
-                "start_unit": int(start_unit),
-                "end_unit": int(end_unit),
-                "location": room,
-            })
+                teachers_set = set(teacher_list)
+                locations_set = set()
+                if location:
+                    locations_set.add(location)
+                group_map[key] = {
+                    "title": title,
+                    "code": code,
+                    "weekday": weekday,
+                    "start_unit": start_unit,
+                    "end_unit": end_unit,
+                    "_weeks_set": set(week_indexes),
+                    "_teachers_set": teachers_set,
+                    "_locations_set": locations_set,
+                }
     
+    # 将分组结果转换为 schedules
+    schedules = []
+    for entry in group_map.values():
+        week_indexes = sorted(entry["_weeks_set"])
+        if not week_indexes:
+            continue
+        
+        # 构建 weeks_str
+        if len(week_indexes) > 1 and all(
+            week_indexes[i] + 1 == week_indexes[i + 1] for i in range(len(week_indexes) - 1)
+        ):
+            weeks_str = f"{week_indexes[0]}-{week_indexes[-1]}"
+        else:
+            weeks_str = ",".join(str(w) for w in week_indexes)
+        
+        # 教师合并
+        teacher = "、".join(sorted(entry["_teachers_set"])) if entry["_teachers_set"] else ""
+        
+        # 地点合并
+        location = "、".join(sorted(entry["_locations_set"])) if entry["_locations_set"] else ""
+        
+        schedules.append({
+            "title": entry["title"],
+            "code": entry["code"],
+            "teacher": teacher,
+            "weekday": entry["weekday"],
+            "weeks": weeks_str,
+            "start_unit": entry["start_unit"],
+            "end_unit": entry["end_unit"],
+            "location": location,
+        })
+    
+    logger.info(f"Parsed {len(schedules)} schedule entries (merged from {len(group_map)} groups)")
     return schedules
 
 
@@ -628,6 +685,101 @@ def period_to_time(period_str: str) -> tuple[str, str]:
     end = period_map.get(last, (None, '09:30'))[1]
     
     return (start, end)
+
+
+def parse_all_semester_dates(page_html: str) -> dict[int, str]:
+    """
+    解析课表页面 HTML 中 var semesters = JSON.parse(...) 的所有学期日期。
+    
+    返回: { semester_id: "YYYY-MM-DD(周一)" }
+    注意：原始数据中 startDate 是周日，需转换为周一。
+    
+    如果彻底解析不到任何学期日期，返回空 dict。
+    绝不做静默估算。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    import json
+    
+    all_sems = []
+    
+    # 方法1: 先在 HTML 中找到包含 var semesters 的 <script> 块
+    script_match = re.search(r'<script[^>]*>(.*?)</script>', page_html, re.DOTALL | re.IGNORECASE)
+    html_block = page_html
+    
+    # 方法2: 直接找 semesters = 所在的行
+    for pattern in [
+        # 匹配 "var semesters = JSON.parse('[...]')" 格式（最常见）
+        r'var\s+semesters\s*=\s*JSON\.parse\(\s*\'(.+?)\'\)\s*;',
+        # 匹配 "semesters = JSON.parse('[...]')" 格式
+        r'semesters\s*=\s*JSON\.parse\(\s*\'(.+?)\'\)\s*;',
+    ]:
+        match = re.search(pattern, html_block, re.DOTALL)
+        if match:
+            raw = match.group(1)
+            try:
+                # 处理转义
+                raw_cleaned = raw.replace('\\"', '"').replace("\\'", "'")
+                data = json.loads(raw_cleaned)
+                if isinstance(data, list):
+                    all_sems = data
+                    logger.info(f"parse_all_semester_dates: found {len(all_sems)} semesters via JSON.parse")
+                    break
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"JSON.parse extraction failed: {e}")
+                continue
+    
+    # 方法3: 直接匹配 JSON.parse 中的转义字符串（逐个字符拼凑）
+    if not all_sems:
+        # 找 semesters = JSON.parse(' 和 '); 之间的内容
+        start_marker = "JSON.parse('"
+        end_marker = "');"
+        start_idx = page_html.find(start_marker)
+        if start_idx >= 0:
+            start_idx += len(start_marker)
+            end_idx = page_html.find(end_marker, start_idx)
+            if end_idx >= 0:
+                raw = page_html[start_idx:end_idx]
+                try:
+                    raw_cleaned = raw.replace('\\"', '"').replace("\\'", "'")
+                    data = json.loads(raw_cleaned)
+                    if isinstance(data, list):
+                        all_sems = data
+                        logger.info(f"parse_all_semester_dates: found {len(all_sems)} semesters via direct extraction")
+                except (json.JSONDecodeError, ValueError) as e:
+                    logger.warning(f"Direct JSON extraction failed: {e}")
+    
+    # 方法4: 从 HTML 中逐个提取 startDate 和 id
+    if not all_sems:
+        start_dates = re.findall(r'"startDate"\s*:\s*"(\d{4}-\d{2}-\d{2})"', page_html)
+        ids = re.findall(r'"id"\s*:\s*(\d+)', page_html)
+        if start_dates and ids and len(start_dates) == len(ids):
+            all_sems = []
+            for i, sem_id in enumerate(ids):
+                all_sems.append({"id": int(sem_id), "startDate": start_dates[i]})
+            logger.info(f"parse_all_semester_dates: found {len(all_sems)} semesters via regex")
+    
+    if not all_sems:
+        logger.error("parse_all_semester_dates: FAILED to parse ANY semester dates from page! Page sample: " + page_html[:500])
+        return {}
+    
+    # 转换为 dict，startDate 周日→周一
+    result = {}
+    from datetime import datetime, timedelta
+    for sem in all_sems:
+        sem_id = sem.get("id")
+        start_date_str = sem.get("startDate", "")
+        if sem_id and start_date_str:
+            try:
+                dt = datetime.strptime(start_date_str, "%Y-%m-%d")
+                dt += timedelta(days=1)  # 周日 → 周一
+                result[int(sem_id)] = dt.strftime("%Y-%m-%d")
+            except ValueError as e:
+                logger.error(f"parse_all_semester_dates: bad date '{start_date_str}' for sem {sem_id}: {e}")
+                # 不插入错误日期
+    
+    logger.info(f"parse_all_semester_dates: result = {result}")
+    return result
 
 
 def unit_to_time(unit: int) -> tuple[str, str]:
