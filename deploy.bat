@@ -15,7 +15,7 @@ echo   ✅ Docker 容器正常
 :: ===== 步骤 2: 迁移数据库 =====
 echo [2/5] 迁移数据库...
 docker exec backend-api-1 pip install psycopg2-binary -q >nul 2>&1
-docker cp deploy_migrate.py backend-api-1:/tmp/deploy_migrate.py >nul 2>&1
+docker cp e:\编程\time_manager\deploy_migrate.py backend-api-1:/tmp/deploy_migrate.py >nul 2>&1
 docker exec backend-api-1 python /tmp/deploy_migrate.py 2>&1
 echo.
 
