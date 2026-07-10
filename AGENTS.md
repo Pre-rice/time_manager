@@ -32,6 +32,8 @@
 time_manager/
 ├── README.md              # 给用户看的说明
 ├── AGENTS.md               # 给 AI 看的指令手册
+├── deploy.bat              # ✅ 一键部署脚本（双击运行）
+├── deploy_migrate.py       # ✅ 数据库迁移脚本（被 deploy.bat 调用）
 ├── backend/
 │   ├── docker-compose.yml
 │   ├── Dockerfile
@@ -65,22 +67,20 @@ time_manager/
         ├── main.dart      # 入口（设置中文本地化）
         ├── app.dart       # GoRouter 路由定义
         ├── theme.dart     # Material 3 主题
-        ├── models/        # 数据模型
+        ├── models/        # 数据模型（不存在，全用 Map）
         ├── providers/     # Riverpod 状态
         ├── services/
         │   └── api_service.dart  # Dio HTTP 客户端
         └── pages/         # 页面
 ```
 
-### 数据库表（共 10 张）
+### 数据库表（共 9 张 — 删除了 preparation_periods 子表）
 
 | 表名 | 说明 | 关键字段 |
 |------|------|---------|
 | `users` | 用户 | id, username, email, hashed_password |
-| `events` | 日程 | title, start_time, end_time, rrule, source, event_type |
-| `event_preparation_periods` | 日程准备时段 | event_id, start_time, end_time |
-| `tasks` | 待办 | title, deadline, priority(1-3), status |
-| `task_preparation_periods` | 待办准备时段 | task_id, start_time, end_time |
+| `events` | 日程 | title, start_time, end_time, rrule, source, event_type, **is_preparation**, **parent_event_id**, **parent_task_id** |
+| `tasks` | 待办 | title, deadline, **is_important**, status |
 | `goals` | 长期目标 | title, target_value, current_value, unit |
 | `ai_configs` | AI 配置 | provider, api_base, encrypted_key |
 | `ai_templates` | 提示词模板 | type, template_text |
@@ -124,6 +124,13 @@ time_manager/
 
 ### 启动步骤
 
+**方式一：双击 `deploy.bat` 一键部署（推荐）**
+```bash
+# 只需双击项目根目录的 deploy.bat
+# 自动完成：启动 Docker → 数据库迁移 → 重启 API → 构建前端 → 启动 HTTP
+```
+
+**方式二：手动步骤**
 ```bash
 # 1. 启动数据库
 cd e:\编程\time_manager\backend
@@ -192,7 +199,8 @@ authserver/login (获取 lck + entityId)
 5. **Cookie 会过期** — `sync_fudan_data` 必须在同步开始前用保存密码重新 CAS 认证（2026-07-10 修复）
 6. **Docker 容器内 Python stdout 缓冲** — `docker exec` 运行 Python 时输出被缓冲吞掉，调试困难。解决：写入文件再用 `cat` 读取
 7. **`last_sync_at` 时区** — 后端存 UTC，前端直接显示 UTC 而非北京时间（需修复）
-8. **前端编辑弹窗无 RRULE 支持** — 编辑弹窗没展示重复规则（需修复）
+8. ~~**前端编辑弹窗无 RRULE 支持** — 编辑弹窗没展示重复规则（需修复）~~ （仍存在，但优先级低）
+9. **`deploy.bat` CMD 内联 Python** — Windows CMD 中 `docker exec python -c "..."` 多行会炸，迁移逻辑抽离到 `deploy_migrate.py` 通过 `docker cp` 执行（已修复 2026-07-10）
 
 ## 前端 Flutter 注意事项
 
@@ -203,6 +211,16 @@ authserver/login (获取 lck + entityId)
 - **`const` 常量**：不能用 `()` 调用，如 `_HomeData.empty` 不是 `_HomeData.empty()`
 - **AI 提取弹窗复用**：`showEventEditDialog`/`showTaskEditDialog` 是顶层函数
 - **错误提示**：必须从后端提取具体信息，不能笼统
+- **编辑弹窗字段**：所有字段在 `events_page.dart` 中的 `showEventEditDialog`/`showTaskEditDialog` 中定义（是可复用的顶层函数）
+  - 日程：title, description, event_type, start_time, end_time, is_all_day, is_preparation, preparation_minutes
+  - 待办：title, description, deadline, is_important, status, preparation_minutes
+
+## 关于 `deploy.bat` 迁移机制
+
+`deploy.bat` 用 `docker cp` 将 `deploy_migrate.py` 复制到容器内执行，而不是内联 Python。原因是 Windows CMD 不支持 `docker exec python -c "..."` 中的多行 Python。`deploy_migrate.py` 会智能检测数据库 schema 状态：
+
+- 如果 `events` 表已有 `is_preparation` 且 `tasks` 表已有 `is_important` → 跳过迁移
+- 否则执行所有 ALTER TABLE 和 DROP TABLE 操作
 
 ## 开发进度及技术细节
 
@@ -241,6 +259,38 @@ authserver/login (获取 lck + entityId)
 - [ ] `last_sync_at` 前端显示 UTC+8 时区修复
 - [ ] 前端 RRULE 展示和编辑
 - [ ] eLearning 作业抓取
+
+### Phase 5.5 ✅ 数据模型重构（2026-07-10 完成）
+本次重构对 Event 和 Task 的数据模型进行了彻底清理：
+
+**Event 字段变更：**
+- `postponed` → 🔴 删除（语义模糊，延期直接改时间即可）
+- `event_type` → ✅ 保留（event/class/exam，可扩展）
+- `preparation_minutes` → ✅ 保留
+- `preparation_periods` 子表 → 🔴 删除，被 `is_preparation` 机制替代
+- `is_preparation` → 🆕 新增（标记是否为准备日程）
+- `parent_event_id` → 🆕 新增（FK→events.id，为日程做准备）
+- `parent_task_id` → 🆕 新增（FK→tasks.id，为待办做准备）
+- CHECK 约束：`parent_event_id` 和 `parent_task_id` 严格互斥
+
+**Task 字段变更：**
+- `priority` (0-3) → 🔴 删除，被 `is_important` 替代
+- `view_type` → 🔴 删除（前端展示逻辑不应入数据库）
+- `status` → ✅ 保留（todo/in_progress/done/cancelled）
+- `is_important` → 🆕 新增（bool，简单星标标记）
+
+**API Schema 补全：**
+- EventCreate/EventUpdate 补全：`source`、`is_preparation`、`parent_event_id`、`parent_task_id`
+- TaskCreate 补全：`status`、`source`、`is_important`
+- TaskUpdate 补全：`source`、`is_important`
+
+**前端编辑弹窗补全（所有字段都可编辑）：**
+- 日程弹窗：title, description, event_type（下拉）, start/end time, is_all_day（开关）, is_preparation（开关）, preparation_minutes（输入）
+- 待办弹窗：title, description, deadline, is_important（星标开关）, status（下拉）, preparation_minutes（输入）
+
+**一键部署脚本（2026-07-10 新增）：**
+- `deploy.bat` — 双击自动完成 5 步部署，约 1 分钟
+- `deploy_migrate.py` — 智能迁移脚本，检测数据库是否需要迁移
 
 ### 关键技术障碍（2026-07-09 记录）
 
@@ -305,6 +355,11 @@ authserver/login (获取 lck + entityId)
 **正确日期**：sem 527(2026-09-07)、sem 505(2026-03-02)、sem 504(2025-09-08)
 
 **教训**：用户给的数据就是权威，绝对不能用自己的猜测或 fallback 代替。
+
+#### 经验 #8：前端编辑弹窗必须覆盖所有 Schema 字段
+**背景**：之前的编辑弹窗只传了 title/description/start_time/end_time，后端虽然 schema 支持更多字段但前端根本没发送。用户要求"前端能编辑所有字段"。
+
+**决策**：编辑弹窗的 `Navigator.pop(ctx, ...)` 和 API 调用的 `createEvent`/`updateEvent` 必须覆盖所有 Schema 中定义的可编辑字段。使用 `if (result['xxx'] != null)` 选择性发送。
 
 ### Phase 6 🔜 实时与提醒
 ### Phase 7 🔜 界面美化
