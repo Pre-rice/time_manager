@@ -42,6 +42,7 @@ class TasksPage extends ConsumerWidget {
               itemBuilder: (context, index) {
                 final task = tasks[index] as Map<String, dynamic>;
                 final isDone = task['status'] == 'done';
+                final isImportant = task['is_important'] == true;
 
                 return Card(
                   margin: const EdgeInsets.only(bottom: 8),
@@ -55,12 +56,23 @@ class TasksPage extends ConsumerWidget {
                         ref.invalidate(_tasksProvider);
                       },
                     ),
-                    title: Text(
-                      task['title'] ?? '',
-                      style: TextStyle(
-                        decoration: isDone ? TextDecoration.lineThrough : null,
-                        color: isDone ? theme.colorScheme.onSurfaceVariant : null,
-                      ),
+                    title: Row(
+                      children: [
+                        if (isImportant)
+                          const Padding(
+                            padding: EdgeInsets.only(right: 4),
+                            child: Icon(Icons.star, size: 16, color: Colors.amber),
+                          ),
+                        Expanded(
+                          child: Text(
+                            task['title'] ?? '',
+                            style: TextStyle(
+                              decoration: isDone ? TextDecoration.lineThrough : null,
+                              color: isDone ? theme.colorScheme.onSurfaceVariant : null,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                     subtitle: Text(_taskSubtitle(task)),
                     trailing: IconButton(
@@ -120,7 +132,8 @@ class TasksPage extends ConsumerWidget {
     final titleCtrl = TextEditingController(text: task?['title'] ?? '');
     DateTime? deadlineDate;
     TimeOfDay? deadlineTime;
-    int priority = (task?['priority'] as int?) ?? 0;
+    bool isImportant = (task?['is_important'] as bool?) ?? false;
+    String status = (task?['status'] as String?) ?? 'todo';
 
     final deadlineStr = task?['deadline'] as String?;
     if (deadlineStr != null && deadlineStr.length >= 16) {
@@ -177,16 +190,25 @@ class TasksPage extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      const Text('优先级: '),
-                      for (int i = 0; i <= 3; i++)
-                        ChoiceChip(
-                          label: Text(['无', '低', '中', '高'][i]),
-                          selected: priority == i,
-                          onSelected: (v) => setState(() => priority = i),
-                        ),
+                  SwitchListTile(
+                    title: const Text('重要'),
+                    value: isImportant,
+                    onChanged: (v) => setState(() => isImportant = v),
+                    secondary: Icon(isImportant ? Icons.star : Icons.star_border, color: isImportant ? Colors.amber : null),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    value: status,
+                    decoration: const InputDecoration(labelText: '状态', border: OutlineInputBorder()),
+                    items: const [
+                      DropdownMenuItem(value: 'todo', child: Text('待办')),
+                      DropdownMenuItem(value: 'in_progress', child: Text('进行中')),
+                      DropdownMenuItem(value: 'done', child: Text('已完成')),
+                      DropdownMenuItem(value: 'cancelled', child: Text('已取消')),
                     ],
+                    onChanged: (v) {
+                      if (v != null) setState(() => status = v);
+                    },
                   ),
                 ],
               ),
@@ -200,7 +222,8 @@ class TasksPage extends ConsumerWidget {
                     final api = ref.read(apiServiceProvider);
                     final data = <String, dynamic>{
                       'title': titleCtrl.text,
-                      'priority': priority,
+                      'is_important': isImportant,
+                      'status': status,
                     };
                     if (deadlineDate != null && deadlineTime != null) {
                       data['deadline'] = DateTime(
@@ -229,18 +252,6 @@ class TasksPage extends ConsumerWidget {
           );
         },
       ),
-    );
-  }
-
-  Widget _priorityChip(int priority) {
-    final colors = [Colors.grey, Colors.green, Colors.orange, Colors.red];
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: colors[priority].withValues(alpha: 0.2),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Text(['无', '低', '中', '高'][priority], style: TextStyle(fontSize: 12, color: colors[priority])),
     );
   }
 

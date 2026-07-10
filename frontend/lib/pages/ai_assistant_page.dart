@@ -97,7 +97,7 @@ class _AiAssistantPageState extends ConsumerState<AiAssistantPage> {
         'title': item['title'] ?? '',
         'description': item['description'] ?? '',
         'deadline': item['deadline'] ?? '',
-        'priority': item['priority'] ?? 1,
+        'is_important': item['is_important'] ?? false,
       });
       if (result != null) {
         result['type'] = 'task';

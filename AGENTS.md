@@ -246,7 +246,7 @@ authserver/login (获取 lck + entityId)
 
 **`draw-table-data` API 返回 HTML 而非 JSON** ✅ 已修复：
 - 日志显示 `Draw API non-200: body=<!DOCTYPE html>...`，说明该 API 端点已废弃或需要不同认证
-- 参考 [DanXi](https://github.com/DanXi-Dev/DanXi)（复旦官方开源 Flutter App）的源码找到了正确 API
+- 参考 [DanXi](https://github.com/DanXi-Dev/DanXi)（开源 Flutter App）的源码找到了正确 API
   - DanXi 使用 `print-data` API（`/student/for-std/course-table/semester/{sem_id}/print-data`）
   - 返回结构包含 `studentTableVms[].activities[]`，每个 activity 有 courseName、weekday、startUnit、endUnit、weekIndexes（数组）、room、teachers 等字段
   - 使用 GET 请求，无需 POST body

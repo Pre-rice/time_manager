@@ -3,11 +3,9 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select, and_, delete
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-
-from app.models.event import Event, EventPreparationPeriod
+from app.models.event import Event
 from app.schemas.event import EventCreate, EventUpdate
 
 
@@ -22,7 +20,6 @@ class EventService:
         query = (
             select(Event)
             .where(Event.user_id == self.user_id, Event.is_deleted == False)
-            .options(selectinload(Event.preparation_periods))
             .order_by(Event.start_time.asc().nullslast())
         )
         if start and end:
@@ -39,11 +36,14 @@ class EventService:
         result = await self.db.execute(
             select(Event)
             .where(Event.id == event_id, Event.user_id == self.user_id, Event.is_deleted == False)
-            .options(selectinload(Event.preparation_periods))
         )
         return result.scalar_one_or_none()
 
     async def create_event(self, data: EventCreate) -> Event:
+        # 处理 parent_event_id/parent_task_id（前端传的是 str，需转 UUID）
+        parent_event_id = uuid.UUID(data.parent_event_id) if data.parent_event_id else None
+        parent_task_id = uuid.UUID(data.parent_task_id) if data.parent_task_id else None
+
         event = Event(
             user_id=self.user_id,
             title=data.title,
@@ -54,26 +54,15 @@ class EventService:
             is_all_day=data.is_all_day,
             rrule=data.rrule,
             preparation_minutes=data.preparation_minutes,
+            source=data.source,
+            is_preparation=data.is_preparation,
+            parent_event_id=parent_event_id,
+            parent_task_id=parent_task_id,
         )
         self.db.add(event)
         await self.db.flush()
-
-        # 添加准备时段
-        for period in data.preparation_periods:
-            pp = EventPreparationPeriod(
-                event_id=event.id,
-                start_time=period.start_time,
-                end_time=period.end_time,
-            )
-            self.db.add(pp)
-
-        # 重新加载以获取关联的准备时段
-        result = await self.db.execute(
-            select(Event)
-            .where(Event.id == event.id)
-            .options(selectinload(Event.preparation_periods))
-        )
-        return result.scalar_one()
+        await self.db.refresh(event)
+        return event
 
     async def update_event(self, event_id: uuid.UUID, data: EventUpdate) -> Event | None:
         event = await self.get_event(event_id)
@@ -81,16 +70,18 @@ class EventService:
             return None
 
         update_data = data.model_dump(exclude_unset=True)
+        # 处理 parent_event_id/parent_task_id 字符串→UUID 转换
+        if 'parent_event_id' in update_data and isinstance(update_data['parent_event_id'], str):
+            update_data['parent_event_id'] = uuid.UUID(update_data['parent_event_id']) if update_data['parent_event_id'] else None
+        if 'parent_task_id' in update_data and isinstance(update_data['parent_task_id'], str):
+            update_data['parent_task_id'] = uuid.UUID(update_data['parent_task_id']) if update_data['parent_task_id'] else None
+
         for key, value in update_data.items():
             setattr(event, key, value)
 
         await self.db.flush()
-        result = await self.db.execute(
-            select(Event)
-            .where(Event.id == event.id)
-            .options(selectinload(Event.preparation_periods))
-        )
-        return result.scalar_one()
+        await self.db.refresh(event)
+        return event
 
     async def delete_event(self, event_id: uuid.UUID) -> bool:
         event = await self.get_event(event_id)

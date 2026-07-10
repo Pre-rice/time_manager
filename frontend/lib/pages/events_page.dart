@@ -159,7 +159,8 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
   final descCtrl = TextEditingController(text: task?['description'] ?? '');
   DateTime deadlineDate = DateTime.now().add(const Duration(days: 1));
   TimeOfDay deadlineTime = const TimeOfDay(hour: 23, minute: 59);
-  int priority = (task?['priority'] as int?) ?? 1;
+  bool isImportant = (task?['is_important'] as bool?) ?? false;
+  String status = (task?['status'] as String?) ?? 'todo';
 
   if (isEdit) {
     final deadlineStr = task['deadline'] as String?;
@@ -169,7 +170,8 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
         deadlineTime = TimeOfDay.fromDateTime(deadlineDate);
       } catch (_) {}
     }
-    priority = (task['priority'] as int?) ?? 1;
+    isImportant = (task['is_important'] as bool?) ?? false;
+    status = (task['status'] as String?) ?? 'todo';
   }
 
   return showDialog<Map<String, dynamic>>(
@@ -224,17 +226,24 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
                   ),
                 ),
                 const SizedBox(height: 12),
-                DropdownButtonFormField<int>(
-                  value: priority,
-                  decoration: const InputDecoration(labelText: '优先级', border: OutlineInputBorder()),
+                SwitchListTile(
+                  title: const Text('重要'),
+                  value: isImportant,
+                  onChanged: (v) => setState(() => isImportant = v),
+                  secondary: Icon(isImportant ? Icons.star : Icons.star_border, color: isImportant ? Colors.amber : null),
+                ),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  value: status,
+                  decoration: const InputDecoration(labelText: '状态', border: OutlineInputBorder()),
                   items: const [
-                    DropdownMenuItem(value: 0, child: Text('无')),
-                    DropdownMenuItem(value: 1, child: Text('低')),
-                    DropdownMenuItem(value: 2, child: Text('中')),
-                    DropdownMenuItem(value: 3, child: Text('高')),
+                    DropdownMenuItem(value: 'todo', child: Text('待办')),
+                    DropdownMenuItem(value: 'in_progress', child: Text('进行中')),
+                    DropdownMenuItem(value: 'done', child: Text('已完成')),
+                    DropdownMenuItem(value: 'cancelled', child: Text('已取消')),
                   ],
                   onChanged: (v) {
-                    if (v != null) setState(() => priority = v);
+                    if (v != null) setState(() => status = v);
                   },
                 ),
               ],
@@ -250,7 +259,8 @@ Future<Map<String, dynamic>?> showTaskEditDialog(
                   'title': titleCtrl.text,
                   'description': descCtrl.text,
                   'deadline': finalDeadline.toIso8601String(),
-                  'priority': priority,
+                  'is_important': isImportant,
+                  'status': status,
                   'type': 'task',
                 });
               },

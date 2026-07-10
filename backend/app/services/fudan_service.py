@@ -1320,7 +1320,7 @@ async def _upsert_task(db: AsyncSession, user_id: uuid.UUID, task_data: dict):
             title=title[:200],
             description=description[:1000] if description else None,
             deadline=deadline,
-            priority=1,
+            is_important=False,
             status='todo',
             source='fudan',
         )

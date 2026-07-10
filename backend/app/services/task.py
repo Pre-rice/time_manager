@@ -4,9 +4,8 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
-from app.models.task import Task, TaskPreparationPeriod
+from app.models.task import Task
 from app.schemas.task import TaskCreate, TaskUpdate
 
 
@@ -19,7 +18,6 @@ class TaskService:
         result = await self.db.execute(
             select(Task)
             .where(Task.user_id == self.user_id, Task.is_deleted == False)
-            .options(selectinload(Task.preparation_periods))
             .order_by(Task.deadline.asc().nullslast())
         )
         return list(result.scalars().all())
@@ -28,7 +26,6 @@ class TaskService:
         result = await self.db.execute(
             select(Task)
             .where(Task.id == task_id, Task.user_id == self.user_id, Task.is_deleted == False)
-            .options(selectinload(Task.preparation_periods))
         )
         return result.scalar_one_or_none()
 
@@ -38,24 +35,15 @@ class TaskService:
             title=data.title,
             description=data.description,
             deadline=data.deadline,
-            priority=data.priority,
+            is_important=data.is_important,
+            status=data.status,
             preparation_minutes=data.preparation_minutes,
+            source=data.source,
         )
         self.db.add(task)
         await self.db.flush()
-
-        for period in data.preparation_periods:
-            pp = TaskPreparationPeriod(
-                task_id=task.id,
-                start_time=period.start_time,
-                end_time=period.end_time,
-            )
-            self.db.add(pp)
-
-        result = await self.db.execute(
-            select(Task).where(Task.id == task.id).options(selectinload(Task.preparation_periods))
-        )
-        return result.scalar_one()
+        await self.db.refresh(task)
+        return task
 
     async def update_task(self, task_id: uuid.UUID, data: TaskUpdate) -> Task | None:
         task = await self.get_task(task_id)
@@ -67,10 +55,8 @@ class TaskService:
             setattr(task, key, value)
 
         await self.db.flush()
-        result = await self.db.execute(
-            select(Task).where(Task.id == task.id).options(selectinload(Task.preparation_periods))
-        )
-        return result.scalar_one()
+        await self.db.refresh(task)
+        return task
 
     async def delete_task(self, task_id: uuid.UUID) -> bool:
         task = await self.get_task(task_id)
