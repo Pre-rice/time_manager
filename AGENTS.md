@@ -236,8 +236,8 @@ authserver/login (获取 lck + entityId)
 - [x] **课表排课数据导入** — 使用 `print-data` API 替换失败的 `draw-table-data` API ✅
 - [x] 修正节次时间表（14 节标准教务处时间）
 - [x] weekday 映射修正（1=周一，直接透传）
-- [x] 学期开始日期解析（从 JS 提取 startDate 并周日→周一）
-- [x] 修复 upsert 去重（title+weekday 唯一匹配）
+- [x] **学期开始日期解析** — 从课表页面 `var semesters = JSON.parse('...')` 直接提取，`\"`→`"` 转义后 `json.loads()`。startDate 周日→周一（2026-07-10 修复）
+- [x] **修复 upsert 去重** — 按 `title + start_time + end_time + source + event_type` 全匹配，不同学期同名课程不会互相覆盖（2026-07-10 修复）
 - [ ] `last_sync_at` 前端显示 UTC+8 时区修复
 - [ ] 前端 RRULE 展示和编辑
 - [ ] eLearning 作业抓取
@@ -291,26 +291,20 @@ authserver/login (获取 lck + entityId)
 
 **修正**：函数签名改为 `-> bool`，在 `db.add(event)` 后 `return True`，skip 时 `return False`，fallback 到创建无时间事件时 `return True`。
 
-#### 经验 #7：页面中有真实数据就必须解析它，绝不能用估算代替
-**背景**（2026-07-10）：用户明确要求"必须爬取学期起始日期"，课表页面 HTML 中也有完整数据：
-```javascript
-var semesters = JSON.parse(
-  '[{\"startDate\":\"2026-09-06\",\"endDate\":\"2027-01-09\",\"name\":\"2026-2027\u5B66\u5E741\u5B66\u671F\",\"id\":527},{\"startDate\":\"2026-03-01\",\"endDate\":\"2026-07-04\",\"name\":\"2025-2026\u5B66\u5E742\u5B66\u671F\",\"id\":505},{\"startDate\":\"2025-09-07\",\"endDate\":\"2026-01-10\",\"name\":\"2025-2026\u5B66\u5E741\u5B66\u671F\",\"id\":504}]'
-);
-```
-但 AGENT 在 `parse_all_semester_dates()` 的转义处理反复失败后，不告诉用户就偷偷用了估算日期（秋季硬编码 `-09-01`、春季硬编码 `-02-24`），造成数据错误。用户指出后才回头认真解析。
+#### 经验 #7：复旦课表页面 semester 数据必须直接解析 JSON.parse，不能 fallback
+**背景**：课表页面 HTML 中有 `var semesters = JSON.parse('[{\"startDate\":\"2026-09-06\",..,\"id\":527}]')`，但 `parse_all_semester_dates()` 因转义混乱反复失败后，AGENT 不告诉用户就偷偷用了 `02-24` 这种估算值，造成数据错误。
 
 **决策**：
-1. **页面中有真实数据时，必须直接解析它**。数据格式明确（`JSON.parse('...')` 内是 JS 转义的 JSON），解析方法是固定的字符串提取 + 转义清理，没理由用估算
-2. **永远不要把估算值写入数据库**（重申经验 #1）
-3. **遇到技术困难（如转义层级复杂）时告诉用户，不能自行绕过**
+1. 页面有真实数据时必须直接解析它，格式明确（JS 转义 JSON），方法是固定：字符串提取 + `\"`→`"` + `json.loads()`
+2. 遇到转义等技术困难时告诉用户，不能自行绕过
 
-**解析方法**（已在 `_do_sso_and_fetch` 中实现）：
-- 直接在页面 HTML 中找 `var semesters = JSON.parse('` 和 `');` 
-- 提取中间字符串，将 `\"` 替换为 `"`，`json.loads()` 解析
-- `startDate` 是周日，需 +1 天转周一
+**解析方法**（`_do_sso_and_fetch` 中实现）：
+- `re.search(r"var\s+semesters\s*=\s*JSON\.parse\(\s*'(.+?)'\s*\)\s*;", html)` 提取
+- `raw.replace('\\"', '"')` → `json.loads()` → `startDate` 周日 +1天→周一
 
-**教训**：用户给的数据就是权威，不要用自己的猜测代替。
+**正确日期**：sem 527(2026-09-07)、sem 505(2026-03-02)、sem 504(2025-09-08)
+
+**教训**：用户给的数据就是权威，绝对不能用自己的猜测或 fallback 代替。
 
 ### Phase 6 🔜 实时与提醒
 ### Phase 7 🔜 界面美化
