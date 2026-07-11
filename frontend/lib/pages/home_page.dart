@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
-import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 
 final _homeDataProvider = FutureProvider.autoDispose<_HomeData>((ref) async {
@@ -93,6 +92,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     if (status['connected'] != true) return;
 
     // 有连接则自动同步
+    if (!mounted) return;
     setState(() => _syncingFudan = true);
     try {
       final result = await api.syncFudan();
@@ -142,7 +142,25 @@ class _HomePageState extends ConsumerState<HomePage> {
     final homeData = ref.watch(_homeDataProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Time Manager')),
+      appBar: AppBar(
+        title: const Text('Time Manager'),
+        bottom: _syncingFudan || _fudanSyncResult != null
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(24),
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    _syncingFudan
+                        ? '正在同步复旦数据...'
+                        : _fudanSyncResult!,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onPrimary,
+                    ),
+                  ),
+                ),
+              )
+            : null,
+      ),
       drawer: _buildDrawer(context),
       body: RefreshIndicator(
         onRefresh: () async => ref.invalidate(_homeDataProvider),

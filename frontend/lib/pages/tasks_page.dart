@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 
 final _tasksProvider = FutureProvider.autoDispose<List<dynamic>>((ref) async {
@@ -249,7 +248,7 @@ class TasksPage extends ConsumerWidget {
                       ).toIso8601String();
                     }
                     if (isEdit) {
-                      await api.updateTask(task!['id'], data);
+                      await api.updateTask(task['id'], data);
                     } else {
                       await api.createTask(data);
                     }

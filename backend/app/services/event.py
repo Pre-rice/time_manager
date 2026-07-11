@@ -22,13 +22,17 @@ class EventService:
             .where(Event.user_id == self.user_id, Event.is_deleted == False)
             .order_by(Event.start_time.asc().nullslast())
         )
-        if start and end:
-            query = query.where(
-                and_(
-                    Event.start_time >= start,
-                    Event.start_time <= end,
-                )
+        conditions = []
+        if start is not None:
+            conditions.append(
+                Event.start_time >= start
             )
+        if end is not None:
+            conditions.append(
+                Event.start_time <= end
+            )
+        if conditions:
+            query = query.where(and_(*conditions))
         result = await self.db.execute(query)
         return list(result.scalars().all())
 

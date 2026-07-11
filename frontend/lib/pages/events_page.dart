@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'package:rrule/rrule.dart';
-import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 import '../providers/week_start_provider.dart';
 
@@ -41,28 +40,47 @@ Future<Map<String, dynamic>?> showEventEditDialog(
   String eventType = (event?['event_type'] as String?) ?? 'event';
   bool isAllDay = (event?['is_all_day'] as bool?) ?? false;
 
-  // RRULE 状态：none | daily | weekly | weekly_byday | monthly | monthly_byday | yearly
+  // RRULE 状态
   String repeatType = 'none';
   int repeatInterval = 1;
   int repeatCount = 0;
-  // BYDAY：选中的星期几，1=周一 ... 7=周日
   Set<int> byDays = {};
-  // BYMONTHDAY
   int byMonthDay = 1;
 
   // 准备时段列表
   final prepSlots = <_PrepSlot>[];
+  final prepMinutesCtrl = TextEditingController(
+    text: (event?['preparation_minutes'] as int?)?.toString() ?? '',
+  );
 
   if (isEdit) {
     final startStr = event['start_time'] as String?;
     final endStr = event['end_time'] as String?;
-    if (startStr != null && startStr.length >= 16) {
+
+    // 处理全天事件：无 start_time 时用 created_at 作为显示日期
+    final isAllDayVal = (event['is_all_day'] as bool?) ?? false;
+    if (isAllDayVal) {
+      // 全天事件没有 start_time，用 created_at 的日期部分
+      final createdStr = event['created_at'] as String?;
+      if (createdStr != null) {
+        try {
+          final created = DateTime.parse(createdStr);
+          startDate = created;
+          endDate = created;
+        } catch (_) {
+          startDate = DateTime.now();
+          endDate = DateTime.now();
+        }
+      }
+      startTime = const TimeOfDay(hour: 0, minute: 0);
+      endTime = const TimeOfDay(hour: 23, minute: 59);
+    } else if (startStr != null && startStr.length >= 16) {
       try {
         startDate = DateTime.parse(startStr.substring(0, 16));
         startTime = TimeOfDay.fromDateTime(startDate);
       } catch (_) {}
     }
-    if (endStr != null && endStr.length >= 16) {
+    if (!isAllDayVal && endStr != null && endStr.length >= 16) {
       try {
         endDate = DateTime.parse(endStr.substring(0, 16));
         endTime = TimeOfDay.fromDateTime(endDate);
@@ -83,7 +101,6 @@ Future<Map<String, dynamic>?> showEventEditDialog(
       if (intervalMatch != null) repeatInterval = int.parse(intervalMatch.group(1)!);
       final countMatch = RegExp(r'COUNT=(\d+)').firstMatch(existingRrule);
       if (countMatch != null) repeatCount = int.parse(countMatch.group(1)!);
-      // 解析 BYDAY
       final byDayMatch = RegExp(r'BYDAY=([A-Z,]+)').firstMatch(existingRrule);
       if (byDayMatch != null) {
         final dayMap = {'MO': 1, 'TU': 2, 'WE': 3, 'TH': 4, 'FR': 5, 'SA': 6, 'SU': 7};
@@ -121,7 +138,6 @@ Future<Map<String, dynamic>?> showEventEditDialog(
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setState) {
-        // 准备时段日期/时间选择
         Future<void> pickPrepSlotTime(int index, bool isStart) async {
           final slot = prepSlots[index];
           final initial = isStart ? slot.startTime : slot.endTime;
@@ -192,7 +208,6 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   maxLines: 2,
                 ),
                 const SizedBox(height: 12),
-                // 日程类型
                 DropdownButtonFormField<String>(
                   value: eventType,
                   decoration: const InputDecoration(labelText: '类型', border: OutlineInputBorder()),
@@ -206,7 +221,6 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   },
                 ),
                 const SizedBox(height: 12),
-                // 开始日期
                 InkWell(
                   onTap: () => pickDate(true),
                   child: InputDecorator(
@@ -224,7 +238,6 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                     ),
                   ),
                 if (!isAllDay) const SizedBox(height: 12),
-                // 结束日期
                 InkWell(
                   onTap: () => pickDate(false),
                   child: InputDecorator(
@@ -242,7 +255,6 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                     ),
                   ),
                 if (!isAllDay) const SizedBox(height: 12),
-                // 全天开关
                 SwitchListTile(
                   title: const Text('全天'),
                   value: isAllDay,
@@ -275,7 +287,7 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   Wrap(
                     spacing: 4,
                     children: List.generate(7, (i) {
-                      final dayNum = i + 1; // 1=周一 ... 7=周日
+                      final dayNum = i + 1;
                       final labels = ['一', '二', '三', '四', '五', '六', '日'];
                       final selected = byDays.contains(dayNum);
                       return FilterChip(
@@ -407,6 +419,17 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                     ),
                   );
                 }),
+                const Divider(),
+                // ===== 准备时间（分钟） =====
+                TextField(
+                  controller: prepMinutesCtrl,
+                  decoration: const InputDecoration(
+                    labelText: '准备时间（分钟）',
+                    hintText: '如：30',
+                    border: OutlineInputBorder(),
+                  ),
+                  keyboardType: TextInputType.number,
+                ),
               ],
             ),
           ),
@@ -428,7 +451,7 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                   data['start_time'] = finalStart.toIso8601String();
                   data['end_time'] = finalEnd.toIso8601String();
                 }
-                // RRULE
+                // RRULE — 始终传 rrule 字段，none 时传 null（显式清空）
                 if (repeatType != 'none') {
                   final freqMap = {
                     'daily': 'DAILY',
@@ -448,16 +471,22 @@ Future<Map<String, dynamic>?> showEventEditDialog(
                     rrule += ';BYMONTHDAY=$byMonthDay';
                   }
                   data['rrule'] = rrule;
+                } else {
+                  // 显式传 null 让后端清空 rrule
+                  data['rrule'] = null;
                 }
-                // 准备时段
-                if (prepSlots.isNotEmpty) {
-                  data['preparation_slots'] = prepSlots
-                      .where((s) => s.startTime.isBefore(s.endTime))
-                      .map((s) => {
-                        'start_time': s.startTime.toIso8601String(),
-                        'end_time': s.endTime.toIso8601String(),
-                      })
-                      .toList();
+                // 准备时段 — 始终传 preparation_slots，空列表也传
+                data['preparation_slots'] = prepSlots
+                    .where((s) => s.startTime.isBefore(s.endTime))
+                    .map((s) => {
+                      'start_time': s.startTime.toIso8601String(),
+                      'end_time': s.endTime.toIso8601String(),
+                    })
+                    .toList();
+                // 准备分钟
+                final prepMin = int.tryParse(prepMinutesCtrl.text);
+                if (prepMin != null && prepMin > 0) {
+                  data['preparation_minutes'] = prepMin;
                 }
                 Navigator.pop(ctx, data);
               },
@@ -630,21 +659,36 @@ class _EventsPageState extends ConsumerState<EventsPage> {
   DateTime _selectedDay = DateTime.now();
   DateTime _focusedDay = DateTime.now();
 
-  /// 获取当月所有日程（含 RRULE 展开），按日期分组
+  /// 获取当月所有日程（含 RRULE 展开 + 全天事件），按日期分组
   Map<DateTime, List<Map<String, dynamic>>> _buildEventMap(List<dynamic> events, DateTime monthStart, DateTime monthEnd) {
     final map = <DateTime, List<Map<String, dynamic>>>{};
 
     for (final e in events) {
       final event = Map<String, dynamic>.from(e as Map);
+      final isAllDay = event['is_all_day'] as bool? ?? false;
       final rruleStr = event['rrule'] as String?;
       final startStr = event['start_time'] as String?;
-      if (startStr == null) continue;
 
+      // 处理全天事件：无 start_time 时，用 created_at 作为日期
       DateTime? startTimeParsed;
-      try {
-        startTimeParsed = DateTime.parse(startStr);
-      } catch (_) {
-        continue;
+      if (isAllDay || startStr == null) {
+        // 全天事件或用 created_at 日期
+        final createdStr = event['created_at'] as String?;
+        if (createdStr != null) {
+          try {
+            startTimeParsed = DateTime.parse(createdStr);
+          } catch (_) {
+            continue;
+          }
+        } else {
+          continue;
+        }
+      } else {
+        try {
+          startTimeParsed = DateTime.parse(startStr);
+        } catch (_) {
+          continue;
+        }
       }
 
       if (rruleStr == null || rruleStr.isEmpty) {
@@ -657,28 +701,41 @@ class _EventsPageState extends ConsumerState<EventsPage> {
 
       // 用 rrule 包解析完整的 rrule 字符串
       try {
-        final rrule = RecurrenceRule.fromString(rruleStr);
+        // 数据库只存了 FREQ=..., fromString 要求 RRULE: 前缀
+        final rrule = RecurrenceRule.fromString('RRULE:$rruleStr');
+        // start 用 UTC 时间确保时区一致（后端存的是 UTC）
+        final utcStart = DateTime.utc(startTimeParsed.year, startTimeParsed.month, startTimeParsed.day,
+            startTimeParsed.hour, startTimeParsed.minute, startTimeParsed.second);
+        // after/before 也用 UTC
+        final utcAfter = DateTime.utc(monthStart.year, monthStart.month, monthStart.day)
+            .subtract(const Duration(days: 1));
+        final utcBefore = DateTime.utc(monthEnd.year, monthEnd.month, monthEnd.day)
+            .add(const Duration(days: 1));
         final occurrences = rrule.getAllInstances(
-          start: startTimeParsed,
-          after: monthStart.subtract(const Duration(days: 1)),
-          before: monthEnd.add(const Duration(days: 1)),
+          start: utcStart,
+          after: utcAfter,
+          before: utcBefore,
           includeAfter: true,
           includeBefore: true,
         );
         final duration = event['end_time'] != null
             ? DateTime.parse(event['end_time']).difference(startTimeParsed)
-            : const Duration(hours: 1);
+            : (isAllDay ? const Duration(days: 1) : const Duration(hours: 1));
 
         for (final occ in occurrences) {
           final ev = Map<String, dynamic>.from(event);
-          ev['start_time'] = occ.toIso8601String();
-          ev['end_time'] = occ.add(duration).toIso8601String();
+          if (!isAllDay) {
+            // occ 是 UTC 时间，直接转 ISO 字符串
+            ev['start_time'] = occ.toIso8601String();
+            ev['end_time'] = occ.add(duration).toIso8601String();
+          }
           final key = DateTime(occ.year, occ.month, occ.day);
           map.putIfAbsent(key, () => []);
           map[key]!.add(ev);
         }
-      } catch (_) {
+      } catch (e) {
         // 解析失败直接使用原始事件
+        print('RRULE expand error for "$rruleStr": $e');
         final key = DateTime(startTimeParsed.year, startTimeParsed.month, startTimeParsed.day);
         map.putIfAbsent(key, () => []);
         map[key]!.add(event);
@@ -720,7 +777,6 @@ class _EventsPageState extends ConsumerState<EventsPage> {
   }
 
   Future<void> _showEditDialog(Map<String, dynamic>? event) async {
-    // 获取所有事件（用于编辑时回显准备时段）
     final allEvents = ref.read(_eventsProvider).asData?.value ?? [];
     final result = await showEventEditDialog(context, event, allEvents: allEvents);
     if (result == null) return;
@@ -734,8 +790,9 @@ class _EventsPageState extends ConsumerState<EventsPage> {
           'is_all_day': result['is_all_day'],
           if (result['start_time'] != null) 'start_time': result['start_time'],
           if (result['end_time'] != null) 'end_time': result['end_time'],
-          if (result['rrule'] != null) 'rrule': result['rrule'],
-          if (result['preparation_slots'] != null) 'preparation_slots': result['preparation_slots'],
+          'rrule': result['rrule'],         // 始终传，包括 null
+          'preparation_slots': result['preparation_slots'], // 始终传，包括 []
+          if (result['preparation_minutes'] != null) 'preparation_minutes': result['preparation_minutes'],
         });
       } else {
         await api.createEvent({
@@ -746,7 +803,8 @@ class _EventsPageState extends ConsumerState<EventsPage> {
           if (result['start_time'] != null) 'start_time': result['start_time'],
           if (result['end_time'] != null) 'end_time': result['end_time'],
           if (result['rrule'] != null) 'rrule': result['rrule'],
-          if (result['preparation_slots'] != null) 'preparation_slots': result['preparation_slots'],
+          'preparation_slots': result['preparation_slots'],
+          if (result['preparation_minutes'] != null) 'preparation_minutes': result['preparation_minutes'],
         });
       }
       ref.invalidate(_eventsProvider);
@@ -776,18 +834,25 @@ class _EventsPageState extends ConsumerState<EventsPage> {
   }
 
   String _formatTime(Map<String, dynamic> event) {
+    final isAllDay = event['is_all_day'] as bool? ?? false;
+    if (isAllDay) return '全天';
+
     final start = event['start_time'] as String?;
     final end = event['end_time'] as String?;
-    if (start == null && end == null) return '全天';
+    if (start == null) return '';
     try {
-      final s = start!.substring(0, 16).replaceAll('T', ' ');
+      final s = DateTime.parse(start);
       if (end != null) {
-        final e = end.substring(0, 16).replaceAll('T', ' ');
-        return '$s ~ $e';
+        final eDt = DateTime.parse(end);
+        // 同一天只显示时间
+        if (s.year == eDt.year && s.month == eDt.month && s.day == eDt.day) {
+          return '${DateFormat('HH:mm').format(s)} ~ ${DateFormat('HH:mm').format(eDt)}';
+        }
+        return '${DateFormat('MM-dd HH:mm').format(s)} ~ ${DateFormat('MM-dd HH:mm').format(eDt)}';
       }
-      return s;
+      return DateFormat('MM-dd HH:mm').format(s);
     } catch (_) {
-      return start ?? '';
+      return start;
     }
   }
 
@@ -825,7 +890,7 @@ class _EventsPageState extends ConsumerState<EventsPage> {
         data: (events) {
           final weekDay = weekStart.isMonday ? StartingDayOfWeek.monday : StartingDayOfWeek.sunday;
 
-          // 一次性计算当前聚焦月的所有日程
+          // 安全计算月底：用 DateTime.utc 避免 12 月 +1 溢出
           final monthStart = DateTime(_focusedDay.year, _focusedDay.month, 1);
           final monthEnd = DateTime(_focusedDay.year, _focusedDay.month + 1, 0, 23, 59, 59);
           final eventMap = _buildEventMap(events, monthStart, monthEnd);
@@ -921,12 +986,18 @@ class _EventsPageState extends ConsumerState<EventsPage> {
                             final event = dayEvents[index];
                             final hasRrule = (event['rrule'] as String?)?.isNotEmpty ?? false;
                             final isPrep = event['is_preparation'] as bool? ?? false;
+                            final isAllDay = event['is_all_day'] as bool? ?? false;
                             return Card(
                               margin: const EdgeInsets.only(bottom: 8),
                               child: ListTile(
                                 leading: CircleAvatar(
-                                  backgroundColor: _eventColor(event['event_type'] ?? 'event'),
-                                  child: Icon(_eventIcon(event['event_type'] ?? 'event'), color: Colors.white),
+                                  backgroundColor: isPrep
+                                      ? Colors.orange.withValues(alpha: 0.7)
+                                      : _eventColor(event['event_type'] ?? 'event'),
+                                  child: Icon(
+                                    isPrep ? Icons.pending : _eventIcon(event['event_type'] ?? 'event'),
+                                    color: Colors.white,
+                                  ),
                                 ),
                                 title: Row(
                                   children: [
@@ -940,6 +1011,11 @@ class _EventsPageState extends ConsumerState<EventsPage> {
                                       const Padding(
                                         padding: EdgeInsets.only(left: 4),
                                         child: Icon(Icons.repeat, size: 16, color: Colors.grey),
+                                      ),
+                                    if (isAllDay)
+                                      const Padding(
+                                        padding: EdgeInsets.only(left: 4),
+                                        child: Icon(Icons.calendar_today, size: 14, color: Colors.grey),
                                       ),
                                   ],
                                 ),

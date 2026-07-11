@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 
 final _goalsProvider = FutureProvider.autoDispose<List<dynamic>>((ref) async {
@@ -197,7 +196,7 @@ class GoalsPage extends ConsumerWidget {
                   if (targetCtrl.text.isNotEmpty) {
                     data['target_value'] = double.parse(targetCtrl.text);
                   }
-                  await api.updateGoal(goal!['id'], data);
+                  await api.updateGoal(goal['id'], data);
                 } else {
                   await api.createGoal(data);
                 }
